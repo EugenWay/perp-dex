@@ -119,6 +119,7 @@ pub struct WithdrawalRequest {
     pub created_at_time: u64,
 }
 
+
 #[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
@@ -130,6 +131,25 @@ pub enum OrderType {
     StopLossDecrease,
     MarketSwap,
     LimitSwap,
+}
+
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum OrderStatus {
+    Created,
+    Executed,
+    Cancelled,
+    Frozen,
+}
+
+/// Order side - Long or Short position
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum OrderSide {
+    Long,
+    Short,
 }
 
 #[derive(Encode, Decode, TypeInfo, Clone, Debug)]
@@ -150,6 +170,7 @@ pub struct Order {
     pub min_output_amount: u128,
     pub is_long: bool,
     pub is_frozen: bool,
+    pub status: OrderStatus,
     pub execution_fee: u128,
     pub callback_gas_limit: u64,
     pub created_at_block: u32,
@@ -157,6 +178,49 @@ pub struct Order {
     pub updated_at_block: u32,
     pub updated_at_time: u64,
 }
+
+/// Simplified parameters for creating orders
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct CreateOrderParams {
+    pub market: String,
+    pub collateral_token: String,
+    pub order_type: OrderType,
+    pub side: OrderSide,
+    pub size_delta_usd: u128,
+    pub collateral_delta_amount: u128,
+    pub trigger_price: u128,
+    pub acceptable_price: u128,
+    pub execution_fee: u128,
+}
+
+/// Parameters for updating orders
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub struct UpdateOrderParams {
+    pub size_delta_usd: Option<u128>,
+    pub trigger_price: Option<u128>,
+    pub acceptable_price: Option<u128>,
+}
+
+/// Result of order creation
+#[derive(Encode, Decode, TypeInfo, Clone, Debug, PartialEq, Eq)]
+#[codec(crate = sails_rs::scale_codec)]
+#[scale_info(crate = sails_rs::scale_info)]
+pub enum ExecutionResult {
+    /// Order executed immediately
+    Executed {
+        position_key: PositionKey,
+        execution_price: u128,
+    },
+    /// Order saved for later execution
+    Saved {
+        order_key: RequestKey,
+    },
+}
+
 
 #[derive(Encode, Decode, TypeInfo, Clone, Debug)]
 #[codec(crate = sails_rs::scale_codec)]
@@ -173,14 +237,13 @@ pub struct OracleConfig {
     pub max_age_seconds: u64,
 }
 
-// ✅ FIXED: Using BTreeMap for all maps (HashMap doesn't work with codec)
 #[derive(Encode, Decode, TypeInfo, Clone, Debug)]
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
 pub struct OracleState {
     pub prices: BTreeMap<String, Price>,
-    pub timestamps: BTreeMap<String, u64>,      // ✅ Changed from HashMap
-    pub last_signer: BTreeMap<String, ActorId>, // ✅ Changed from HashMap
+    pub timestamps: BTreeMap<String, u64>,
+    pub last_signer: BTreeMap<String, ActorId>,
     pub config: OracleConfig,
 }
 

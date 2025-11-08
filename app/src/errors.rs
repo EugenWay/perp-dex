@@ -23,18 +23,32 @@ pub enum Error {
     PositionNotFound,
     PositionNotLiquidatable,
     PositionTooSmall,
+    InsufficientPositionSize,
+
+    // Orders
+    OrderNotFound,
+    OrderAlreadyProcessed,
+    OrderCannotBeExecutedYet,
+    InvalidOrderSize,
+    OrderFrozen,
 
     // Risk
     InsufficientCollateral,
     LeverageTooHigh,
+    MaxLeverageExceeded,
     OICapReached,
+    MaxOpenInterestExceeded,
     InsufficientLiquidity,
+    InsufficientPoolLiquidity,
 
     // Execution
     SlippageExceeded,
+    PriceNotAcceptable,
+    InvalidPrice,
+    InvalidCollateralAmount,
     PriceStale,
     InvalidTriggerPrice,
-    OrderFrozen,
+    UnsupportedOrderType,
 
     // Balance
     InsufficientBalance,

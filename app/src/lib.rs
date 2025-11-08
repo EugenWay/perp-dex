@@ -29,6 +29,7 @@ pub struct PerpetualDEXState {
     pub withdrawal_requests: HashMap<RequestKey, WithdrawalRequest>,
     pub orders: HashMap<RequestKey, Order>,
     pub account_orders: HashMap<ActorId, Vec<RequestKey>>,
+    pub order_counter: u64,  // ✅ ADDED for TradingModule
     pub oracle: OracleState,
     pub admin: ActorId,
     pub keepers: Vec<ActorId>,
@@ -49,6 +50,7 @@ impl PerpetualDEXState {
             withdrawal_requests: HashMap::new(),
             orders: HashMap::new(),
             account_orders: HashMap::new(),
+            order_counter: 0,  // ✅ ADDED
             oracle: OracleState::new(),
             admin,
             keepers: Vec::new(),
@@ -77,7 +79,6 @@ impl PerpetualDEXState {
         key
     }
     
-
     /// Get position key for account/market/collateral/side combination
     pub fn get_position_key(
         account: ActorId,
@@ -115,7 +116,6 @@ impl VaraPerpDexProgram {
     }
 
     // Public services exposed to external callers
-    // Using Default::default() since services are unit structs with #[derive(Default)]
     pub fn trading(&self) -> TradingService { Default::default() }
     pub fn executor(&self) -> ExecutorService { Default::default() }
     pub fn view(&self) -> ViewService { Default::default() }

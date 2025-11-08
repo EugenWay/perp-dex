@@ -3,7 +3,7 @@ use sails_rs::collections::BTreeMap;
 use crate::{types::*, errors::Error, PerpetualDEXState, utils};
 
 
-#[derive(Encode, Decode, TypeInfo, Clone, Debug)]  // ✅ Added derive macros
+#[derive(Encode, Decode, TypeInfo, Clone, Debug)]
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
 pub struct SignedPrice {
