@@ -99,15 +99,13 @@ impl TradingModule {
     ) -> Result<ExecutionResult, Error> {
         let st = PerpetualDEXState::get_mut();
 
-        let key = {
-            st.generate_request_key()
-        };
+        let key = st.generate_request_key();
 
         // Create order
         let order = Order {
             key,
             account: caller,
-            receiver: caller, // Default to sender
+            receiver: caller,
             callback_contract: None,
             market: params.market,
             collateral_token: params.collateral_token,
@@ -116,7 +114,7 @@ impl TradingModule {
             collateral_delta_amount: params.collateral_delta_amount,
             trigger_price: params.trigger_price,
             acceptable_price: params.acceptable_price,
-            min_output_amount: 0, // Not used for perp orders
+            min_output_amount: 0,
             is_long: Self::order_side_to_bool(&params.side),
             is_frozen: false,
             status: OrderStatus::Created,
