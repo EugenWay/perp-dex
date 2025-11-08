@@ -29,7 +29,7 @@ pub struct PerpetualDEXState {
     pub withdrawal_requests: HashMap<RequestKey, WithdrawalRequest>,
     pub orders: HashMap<RequestKey, Order>,
     pub account_orders: HashMap<ActorId, Vec<RequestKey>>,
-    pub oracle_prices: HashMap<String, Price>,
+    pub oracle: OracleState,
     pub admin: ActorId,
     pub keepers: Vec<ActorId>,
     pub liquidators: Vec<ActorId>,
@@ -49,7 +49,7 @@ impl PerpetualDEXState {
             withdrawal_requests: HashMap::new(),
             orders: HashMap::new(),
             account_orders: HashMap::new(),
-            oracle_prices: HashMap::new(),
+            oracle: OracleState::new(),
             admin,
             keepers: Vec::new(),
             liquidators: Vec::new(),
@@ -70,12 +70,15 @@ impl PerpetualDEXState {
     }
 
     pub fn generate_request_key(&mut self) -> RequestKey {
-        let key = H256::from_low_u64_be(self.next_request_id);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&self.next_request_id.to_le_bytes());
+        let key = H256::from(bytes);
         self.next_request_id += 1;
         key
     }
+    
 
-    /// Delegate to utils::position_key for compatibility
+    /// Get position key for account/market/collateral/side combination
     pub fn get_position_key(
         account: ActorId,
         market: &str,
@@ -88,29 +91,34 @@ impl PerpetualDEXState {
     pub fn is_keeper(&self, actor: ActorId) -> bool {
         self.keepers.contains(&actor)
     }
+
     pub fn is_liquidator(&self, actor: ActorId) -> bool {
         self.liquidators.contains(&actor)
     }
+
     pub fn is_admin(&self, actor: ActorId) -> bool {
         self.admin == actor
     }
 }
 
-use services::{ ExchangeService, ExecutorService, ViewService, AdminService };
+use services::{TradingService, ExecutorService, AdminService, OracleService, ViewService};
 
-pub struct PerpetualDEXProgram(());
+pub struct VaraPerpDexProgram(());
 
 #[program]
-impl PerpetualDEXProgram {
-    /// Admin is taken from msg::source()
+impl VaraPerpDexProgram {
+    /// Create new program instance. Admin is msg::source() (contract deployer)
     pub fn new() -> Self {
-        let creator = msg::source();
-        PerpetualDEXState::init(creator);
+        let admin = msg::source();
+        PerpetualDEXState::init(admin);
         Self(())
     }
 
-    pub fn exchange(&self) -> ExchangeService { ExchangeService::new() }
-    pub fn executor(&self) -> ExecutorService { ExecutorService::new() }
-    pub fn view(&self) -> ViewService { ViewService::new() }
-    pub fn admin(&self) -> AdminService { AdminService::new() }
+    // Public services exposed to external callers
+    // Using Default::default() since services are unit structs with #[derive(Default)]
+    pub fn trading(&self) -> TradingService { Default::default() }
+    pub fn executor(&self) -> ExecutorService { Default::default() }
+    pub fn view(&self) -> ViewService { Default::default() }
+    pub fn admin(&self) -> AdminService { Default::default() }
+    pub fn oracle(&self) -> OracleService { Default::default() }
 }

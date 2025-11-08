@@ -1,5 +1,6 @@
 use sails_rs::prelude::{ActorId, H256, Vec};
 use sails_rs::gstd::exec;
+use crate::types::Price;
 
 /// Cancellation windows (in blocks)
 pub const DEPOSIT_CXL_DELAY: u32 = 10;
@@ -25,4 +26,16 @@ pub fn position_key(
     data.extend_from_slice(collateral_token.as_bytes());
     data.push(if is_long { 1 } else { 0 });
     H256::from(keccak_256(&data))
+}
+
+pub fn verify_signature(
+    _token: &str,
+    _price: &Price,
+    _timestamp: u64,
+    _signer: &ActorId,
+    _signature: &[u8],
+) -> bool {
+    // TODO: Implement real signature verification
+    // WARNING: This stub returns true for all signatures - NOT SAFE for production!
+    true
 }

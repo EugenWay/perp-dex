@@ -1,5 +1,9 @@
-pub mod pricing;
-pub mod position;
+// modules/mod.rs - Module exports
+
 pub mod oracle;
-pub mod market;
-pub mod risk;
+
+// Future modules to be implemented in Phase 2:
+// pub mod market;
+// pub mod position;
+// pub mod pricing;
+// pub mod risk;
