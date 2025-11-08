@@ -316,35 +316,23 @@ impl TradingModule {
         params: &CreateOrderParams,
         execution_price: u128,
     ) -> Result<(), Error> {
-        // Коммит 2 уточнит эту логику. Пока оставляем как было.
         let is_long = Self::order_side_to_bool(&params.side);
         let is_increase = matches!(
             params.order_type,
             OrderType::MarketIncrease | OrderType::LimitIncrease
         );
 
-        if is_long {
-            if is_increase {
-                if execution_price > params.acceptable_price {
-                    return Err(Error::PriceNotAcceptable);
-                }
-            } else {
-                if execution_price < params.acceptable_price {
-                    return Err(Error::PriceNotAcceptable);
-                }
-            }
-        } else {
-            if is_increase {
-                if execution_price < params.acceptable_price {
-                    return Err(Error::PriceNotAcceptable);
-                }
-            } else {
-                if execution_price > params.acceptable_price {
-                    return Err(Error::PriceNotAcceptable);
-                }
-            }
-        }
-
+        // Long/Increase: MID <= acceptable
+        // Long/Decrease: MID >= acceptable
+        // Short/Increase: MID >= acceptable
+        // Short/Decrease: MID <= acceptable
+        let ok = match (is_long, is_increase) {
+            (true,  true)  => execution_price <= params.acceptable_price,
+            (true,  false) => execution_price >= params.acceptable_price,
+            (false, true)  => execution_price >= params.acceptable_price,
+            (false, false) => execution_price <= params.acceptable_price,
+        };
+        if !ok { return Err(Error::PriceNotAcceptable); }
         Ok(())
     }
 
