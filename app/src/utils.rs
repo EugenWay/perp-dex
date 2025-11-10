@@ -1,4 +1,4 @@
-use sails_rs::prelude::{ActorId, H256, Vec};
+use sails_rs::prelude::{ActorId, H256, Vec, String};
 use sails_rs::gstd::exec;
 use crate::types::Price;
 
@@ -43,6 +43,6 @@ pub fn price_key(id_or_token: &str) -> String {
     if let Some(m) = st.markets.get(id_or_token) {
         m.index_token.clone()
     } else {
-        id_or_token.to_string()
+        String::from(id_or_token)
     }
 }

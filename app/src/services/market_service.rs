@@ -19,7 +19,7 @@ impl MarketService {
         let minted = MarketModule::add_liquidity(lp, market_id.clone(), long_token_amount, short_token_amount, min_mint)?;
 
         // credit LP market tokens
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let mt = st.market_tokens.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
         // helper balance update
         let entry = mt.balances.iter_mut().find(|(a, _)| *a == lp);
@@ -37,7 +37,7 @@ impl MarketService {
     ) -> Result<(u128, u128), Error> {
         let lp = msg::source();
         // burn first (balance check)
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let mt = st.market_tokens.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
         let bal = mt.balances.iter_mut().find(|(a, _)| *a == lp).ok_or(Error::InsufficientMarketTokens)?;
         if bal.1 < market_token_amount { return Err(Error::InsufficientMarketTokens); }

@@ -20,7 +20,7 @@ impl MarketModule {
         market_token: ActorId,
         config: MarketConfig,
     ) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if st.markets.contains_key(&market_id) { return Err(Error::MarketAlreadyExists); }
 
@@ -38,7 +38,7 @@ impl MarketModule {
         market_id: String,
         config: MarketConfig,
     ) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
         st.market_configs.insert(market_id, config);
@@ -53,11 +53,11 @@ impl MarketModule {
         short_token_amount: u128,
         min_mint: u128,
     ) -> Result<u128, Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
         // Convert token amounts to USD via oracle mid
-        let price_key = utils::price_key(&params.market);
+        let price_key = utils::price_key(&market_id);
         let mid = OracleModule::mid(&price_key)?;
         // USD = tokens * price  (price already in USD per 1 unit)
         let long_usd  = long_token_amount.saturating_mul(mid) / USD_SCALE;
@@ -96,7 +96,7 @@ impl MarketModule {
         min_long_out: u128,
         min_short_out: u128,
     ) -> Result<(u128, u128), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
         let pool = st.pool_amounts.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
@@ -115,7 +115,7 @@ impl MarketModule {
         let total_short_usd = short_usd.saturating_add(fee_short_usd);
 
         // Convert USD back to token amounts via current mid
-        let price_key = utils::price_key(&params.market);
+        let price_key = utils::price_key(&market_id);
         let mid = OracleModule::mid(&price_key)?;
         // tokens = USD * USD_SCALE / price
         let long_out_tokens  = total_long_usd .saturating_mul(USD_SCALE) / mid;

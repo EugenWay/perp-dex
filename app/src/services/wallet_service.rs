@@ -20,7 +20,7 @@ impl WalletService {
             return Err(Error::InvalidParameter);
         }
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let bal = st.balances.entry(caller).or_insert(0);
         *bal = bal.saturating_add(amount);
         Ok(*bal)
@@ -32,7 +32,7 @@ impl WalletService {
             return Err(Error::InvalidParameter);
         }
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let bal = st.balances.get_mut(&caller).ok_or(Error::InsufficientBalance)?;
         if *bal < amount {
             return Err(Error::InsufficientBalance);

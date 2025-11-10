@@ -37,7 +37,7 @@ pub struct OracleModule;
 
 impl OracleModule {
     pub fn set_prices(batch: Vec<SignedPrice>) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let now = exec::block_timestamp();
 
         for sp in batch {
@@ -90,7 +90,7 @@ impl OracleModule {
     }
 
     pub fn set_config(caller: ActorId, cfg: OracleConfig) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) {
             return Err(Error::Unauthorized);
         }

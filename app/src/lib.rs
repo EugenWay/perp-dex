@@ -1,6 +1,5 @@
 #![no_std]
 #![warn(clippy::new_without_default)]
-#![allow(static_mut_refs)]
 
 pub mod utils;
 pub mod types;
@@ -12,10 +11,12 @@ mod modules;
 use sails_rs::prelude::*;
 use sails_rs::collections::HashMap;
 use sails_rs::gstd::msg;
+use sails_rs::cell::RefCell;
+use core::cell::{Ref, RefMut};
 
 use types::*;
 
-static mut STATE: Option<PerpetualDEXState> = None;
+static STATE: RefCell<Option<PerpetualDEXState>> = RefCell::new(None);
 
 #[derive(Debug, Clone)]
 pub struct PerpetualDEXState {
@@ -61,16 +62,27 @@ impl PerpetualDEXState {
         }
     }
 
-    pub fn get() -> &'static Self {
-        unsafe { STATE.as_ref().expect("State not initialized") }
+    // ✅ ПРАВИЛЬНО: используем core::cell::Ref вместо std::cell::Ref
+    pub fn get() -> Ref<'static, Self> {
+        Ref::map(
+            STATE.borrow(),
+            |opt| opt.as_ref().expect("State not initialized")
+        )
     }
 
-    pub fn get_mut() -> &'static mut Self {
-        unsafe { STATE.as_mut().expect("State not initialized") }
+    pub fn get_mut() -> RefMut<'static, Self> {
+        RefMut::map(
+            STATE.borrow_mut(),
+            |opt| opt.as_mut().expect("State not initialized")
+        )
     }
 
     pub fn init(admin: ActorId) {
-        unsafe { STATE = Some(Self::new(admin)); }
+        let mut state = STATE.borrow_mut();
+        if state.is_some() {
+            panic!("State already initialized");
+        }
+        *state = Some(Self::new(admin));
     }
 
     pub fn generate_request_key(&mut self) -> RequestKey {
@@ -125,3 +137,4 @@ impl VaraPerpDexProgram {
     pub fn oracle(&self) -> OracleService { Default::default() }
     pub fn wallet(&self) -> WalletService { Default::default() }
     pub fn market(&self) -> MarketService { Default::default() }
+}

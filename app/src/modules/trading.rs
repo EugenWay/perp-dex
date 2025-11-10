@@ -60,7 +60,7 @@ impl TradingModule {
     }
 
     fn save_order(caller: ActorId, params: CreateOrderParams) -> Result<ExecutionResult, Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let key = st.generate_request_key();
 
         let order = Order {
@@ -93,7 +93,7 @@ impl TradingModule {
     }
 
     pub fn execute_saved_order(executor: ActorId, key: RequestKey) -> Result<ExecutionResult, Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let order = st.orders.get(&key).ok_or(Error::OrderNotFound)?.clone();
         if order.status != OrderStatus::Created { return Err(Error::OrderAlreadyProcessed); }
 
@@ -132,7 +132,7 @@ impl TradingModule {
     }
 
     pub fn update_order(caller: ActorId, key: RequestKey, params: UpdateOrderParams) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let o = st.orders.get_mut(&key).ok_or(Error::OrderNotFound)?;
         if o.account != caller { return Err(Error::Unauthorized); }
         if o.status != OrderStatus::Created { return Err(Error::OrderAlreadyProcessed); }
@@ -147,7 +147,7 @@ impl TradingModule {
     }
 
     pub fn cancel_order(caller: ActorId, key: RequestKey) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let o = st.orders.get_mut(&key).ok_or(Error::OrderNotFound)?;
         if o.account != caller { return Err(Error::Unauthorized); }
         if o.status != OrderStatus::Created { return Err(Error::OrderAlreadyProcessed); }
@@ -190,6 +190,20 @@ impl TradingModule {
         };
         if !ok { return Err(Error::PriceNotAcceptable); }
         Ok(())
+    }
+
+    fn order_to_params(o: &Order) -> CreateOrderParams {
+        CreateOrderParams {
+            market: o.market.clone(),
+            collateral_token: o.collateral_token.clone(),
+            order_type: o.order_type.clone(),
+            side: if o.is_long { OrderSide::Long } else { OrderSide::Short },
+            size_delta_usd: o.size_delta_usd,
+            collateral_delta_amount: o.collateral_delta_amount,
+            trigger_price: o.trigger_price,
+            acceptable_price: o.acceptable_price,
+            execution_fee: o.execution_fee,
+        }
     }
 
     fn execute_position_change(caller: ActorId, p: &CreateOrderParams, price: u128) -> Result<PositionKey, Error> {

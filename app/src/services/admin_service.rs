@@ -50,7 +50,7 @@ impl AdminService {
     #[export]
     pub fn add_keeper(&mut self, keeper: ActorId) -> Result<(), Error> {
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if !st.keepers.contains(&keeper) {
             st.keepers.push(keeper);
@@ -62,7 +62,7 @@ impl AdminService {
     #[export]
     pub fn remove_keeper(&mut self, keeper: ActorId) -> Result<(), Error> {
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if let Some(i) = st.keepers.iter().position(|k| *k == keeper) {
             st.keepers.swap_remove(i);
@@ -74,7 +74,7 @@ impl AdminService {
     #[export]
     pub fn add_liquidator(&mut self, liquidator: ActorId) -> Result<(), Error> {
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if !st.liquidators.contains(&liquidator) {
             st.liquidators.push(liquidator);
@@ -85,7 +85,7 @@ impl AdminService {
     #[export]
     pub fn remove_liquidator(&mut self, liquidator: ActorId) -> Result<(), Error> {
         let caller = msg::source();
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         if !st.is_admin(caller) { return Err(Error::Unauthorized); }
         if let Some(i) = st.liquidators.iter().position(|k| *k == liquidator) {
             st.liquidators.swap_remove(i);

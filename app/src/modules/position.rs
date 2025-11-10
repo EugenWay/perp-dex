@@ -19,7 +19,7 @@ impl PositionModule {
         collateral_delta_usd: u128,
         execution_price_usd: u128,
     ) -> Result<PositionKey, Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
 
         // Check user has sufficient USD balance
@@ -123,7 +123,7 @@ impl PositionModule {
         collateral_delta_usd: u128,
         execution_price_usd: u128,
     ) -> Result<PositionKey, Error> {
-        let st = PerpetualDEXState::get_mut();
+        let mut st = PerpetualDEXState::get_mut();
         let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
 
         let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);

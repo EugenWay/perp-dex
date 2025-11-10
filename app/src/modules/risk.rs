@@ -1,4 +1,3 @@
-use sails_rs::gstd::exec;
 use crate::{
     types::*,
     errors::Error,
@@ -16,20 +15,20 @@ pub struct RiskModule;
 
 impl RiskModule {
     pub fn accrue_pool(market: &str, current_time: u64) -> Result<(), Error> {
-        let st = PerpetualDEXState::get_mut();
-        let cfg = st.market_configs.get(market).ok_or(Error::MarketNotFound)?;
+        let mut st = PerpetualDEXState::get_mut();
+        let cfg = st.market_configs.get(market).ok_or(Error::MarketNotFound)?.clone();
         let pool = st.pool_amounts.get_mut(market).ok_or(Error::MarketNotFound)?;
 
         let dt = current_time.saturating_sub(pool.last_funding_update);
         if dt == 0 { return Ok(()); }
 
         // funding
-        let funding_rate = Self::funding_rate(pool, cfg, dt)?;
+        let funding_rate = Self::funding_rate(pool, &cfg, dt)?;
         pool.accumulated_funding_long_per_usd = pool.accumulated_funding_long_per_usd.saturating_add(funding_rate);
         pool.accumulated_funding_short_per_usd = pool.accumulated_funding_short_per_usd.saturating_sub(funding_rate);
 
         // borrowing
-        let borrowing_fees = Self::pool_borrowing_fees(pool, cfg, dt)?;
+        let borrowing_fees = Self::pool_borrowing_fees(pool, &cfg, dt)?;
         pool.total_borrowing_fees_usd = pool.total_borrowing_fees_usd.saturating_add(borrowing_fees);
 
         pool.last_funding_update = current_time;

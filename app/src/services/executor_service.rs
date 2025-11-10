@@ -56,8 +56,8 @@ impl ExecutorService {
             position.market.clone(),
             position.collateral_token.clone(),
             position.is_long,
-            position.size_in_usd,
-            position.collateral_amount,
+            position.size_usd,
+            position.collateral_usd,
             current_price,
         )?;
 
