@@ -7,7 +7,7 @@ use crate::types::*;
 pub enum ExchangeEvent {
     DepositCreated { key: RequestKey, account: ActorId, market: String, long_token_amount: u128, short_token_amount: u128 },
     WithdrawalCreated { key: RequestKey, account: ActorId, market: String, market_token_amount: u128 },
-    OrderCreated { key: RequestKey, account: ActorId, order_type: OrderType, market: String, size_delta_usd: u128 },
+    OrderCreated { key: RequestKey, account: ActorId, order_type: OrderType, market: String, size_delta_usd: u128 },  // ✅ FIXED: accoun t -> account
     OrderUpdated { key: RequestKey, account: ActorId },
     OrderCancelled { key: RequestKey, account: ActorId, reason: String },
 }

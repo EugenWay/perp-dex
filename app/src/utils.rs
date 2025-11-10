@@ -2,10 +2,6 @@ use sails_rs::prelude::{ActorId, H256, Vec};
 use sails_rs::gstd::exec;
 use crate::types::Price;
 
-/// Cancellation windows (in blocks)
-pub const DEPOSIT_CXL_DELAY: u32 = 10;
-pub const ORDER_CXL_DELAY: u32 = 5;
-
 /// Current block info
 #[inline]
 pub fn now() -> (u32, u64) {

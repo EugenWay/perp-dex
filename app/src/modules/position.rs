@@ -1,320 +1,237 @@
-use sails_rs::{prelude::*, gstd::exec};
+use sails_rs::gstd::exec;
+use sails_rs::prelude::*;
 use crate::{
     types::*,
     errors::Error,
     PerpetualDEXState,
+    modules::risk::RiskModule,
 };
 
 pub struct PositionModule;
 
 impl PositionModule {
-    // ========================================================================
-    // INCREASE POSITION
-    // ========================================================================
-    
     pub fn increase_position(
         account: ActorId,
         market: String,
         collateral_token: String,
         is_long: bool,
         size_delta_usd: u128,
-        collateral_delta_amount: u128,
-        execution_price: u128,
+        collateral_delta_usd: u128,
+        execution_price_usd: u128,
     ) -> Result<PositionKey, Error> {
         let st = PerpetualDEXState::get_mut();
-        
-        // Get market config
         let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
-        
-        // Get position key using State function
-        let position_key = PerpetualDEXState::get_position_key(
-            account,
-            &market,
-            &collateral_token,
-            is_long,
-        );
-        
-        // Get or create position
-        let position = if let Some(pos) = st.positions.get_mut(&position_key) {
-            pos
+
+        // Check user has sufficient USD balance
+        let bal = st.balances.get(&account).copied().unwrap_or(0);
+        let total_cost = collateral_delta_usd; // trading fee берётся в TradingModule
+        if bal < total_cost { return Err(Error::InsufficientBalance); }
+
+        let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
+        let now = exec::block_timestamp();
+
+        // Settle fees if exists
+        if st.positions.contains_key(&key) {
+            let pos = st.positions.get_mut(&key).unwrap();
+            RiskModule::settle_position_fees(pos, &market, now)?;
+        }
+
+        let pos = if let Some(p) = st.positions.get_mut(&key) {
+            p
         } else {
-            // Create new position
-            let new_pos = Position {
-                key: position_key,
+            let p = Position {
+                key,
                 account,
                 market: market.clone(),
                 collateral_token: collateral_token.clone(),
                 is_long,
-                size_in_usd: 0,
-                size_in_tokens: 0,
-                collateral_amount: 0,
-                entry_price: execution_price,
-                liquidation_price: 0,
+                size_usd: 0,
+                collateral_usd: 0,
+                entry_price_usd: execution_price_usd,
+                liquidation_price_usd: 0,
+                funding_fee_per_usd: 0,
                 borrowing_factor: 0,
-                funding_fee_per_size: 0,
                 increased_at_block: exec::block_height(),
                 decreased_at_block: 0,
-                last_fee_update: exec::block_timestamp(),
+                last_fee_update: now,
             };
-            st.positions.insert(position_key, new_pos);
-            
-            // Add to account positions
-            st.account_positions
-                .entry(account)
-                .or_insert_with(Vec::new)
-                .push(position_key);
-            
-            st.positions.get_mut(&position_key).unwrap()
+            st.positions.insert(key, p);
+            st.account_positions.entry(account).or_insert_with(Vec::new).push(key);
+            st.positions.get_mut(&key).unwrap()
         };
-        
-        // Calculate new entry price (weighted average)
-        if position.size_in_usd > 0 {
-            let total_cost = position.size_in_usd * position.entry_price / 1_000000 
-                           + size_delta_usd * execution_price / 1_000000;
-            let total_size = position.size_in_usd + size_delta_usd;
-            position.entry_price = total_cost * 1_000000 / total_size;
+
+        // Weighted average entry
+        if pos.size_usd > 0 {
+            let total_cost_usd = pos.size_usd
+                .saturating_mul(pos.entry_price_usd) / USD_SCALE
+                + size_delta_usd.saturating_mul(execution_price_usd) / USD_SCALE;
+            let total_size_usd = pos.size_usd.saturating_add(size_delta_usd);
+            if total_size_usd == 0 { return Err(Error::MathOverflow); }
+            pos.entry_price_usd = total_cost_usd.saturating_mul(USD_SCALE) / total_size_usd;
         } else {
-            position.entry_price = execution_price;
+            pos.entry_price_usd = execution_price_usd;
         }
-        
-        // Calculate size in tokens
-        let size_delta_tokens = Self::usd_to_tokens(size_delta_usd, execution_price);
-        
-        // Update position
-        position.size_in_usd += size_delta_usd;
-        position.size_in_tokens += size_delta_tokens;
-        position.collateral_amount += collateral_delta_amount;
-        position.increased_at_block = exec::block_height();
-        
-        // Update pool state (pool becomes counterparty)
+
+        // OI limits (USD)
         let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
-        
         if is_long {
-            // Trader long → pool short
-            pool.long_oi += size_delta_usd;
-            pool.long_oi_in_tokens += size_delta_tokens;
-            pool.long_token_amount += collateral_delta_amount;
-            
-            // Check max OI
-            if pool.long_oi > config.max_long_oi {
-                return Err(Error::MaxOpenInterestExceeded);
-            }
+            let new_oi = pool.long_oi_usd.saturating_add(size_delta_usd);
+            if new_oi > config.max_long_oi { return Err(Error::MaxOpenInterestExceeded); }
         } else {
-            // Trader short → pool long
-            pool.short_oi += size_delta_usd;
-            pool.short_oi_in_tokens += size_delta_tokens;
-            pool.short_token_amount += collateral_delta_amount;
-            
-            if pool.short_oi > config.max_short_oi {
-                return Err(Error::MaxOpenInterestExceeded);
-            }
+            let new_oi = pool.short_oi_usd.saturating_add(size_delta_usd);
+            if new_oi > config.max_short_oi { return Err(Error::MaxOpenInterestExceeded); }
         }
-        
-        // Calculate liquidation price
-        position.liquidation_price = Self::calculate_liquidation_price(
-            position,
-            config.liquidation_threshold_bps,
-        );
-        
-        // Validate leverage
-        let collateral_value = position.collateral_amount * execution_price / 1_000000;
-        if collateral_value > 0 {
-            let leverage = position.size_in_usd * 10000 / collateral_value;
-            if leverage > config.max_leverage as u128 * 10000 {
+
+        // Deduct user balance (collateral part)
+        let entry = st.balances.get_mut(&account).unwrap();
+        *entry = entry.saturating_sub(collateral_delta_usd);
+
+        // Update position
+        pos.size_usd = pos.size_usd.saturating_add(size_delta_usd);
+        pos.collateral_usd = pos.collateral_usd.saturating_add(collateral_delta_usd);
+        pos.increased_at_block = exec::block_height();
+
+        // Update pool OI and liquidity backing (USD)
+        if is_long {
+            pool.long_oi_usd = pool.long_oi_usd.saturating_add(size_delta_usd);
+            pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_add(collateral_delta_usd);
+        } else {
+            pool.short_oi_usd = pool.short_oi_usd.saturating_add(size_delta_usd);
+            pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_add(collateral_delta_usd);
+        }
+
+        // Liquidation price cache
+        pos.liquidation_price_usd = Self::calculate_liquidation_price(pos, config.liquidation_threshold_bps);
+
+        // Leverage check
+        if pos.collateral_usd > 0 {
+            let leverage_bps = pos.size_usd.saturating_mul(10_000) / pos.collateral_usd;
+            if leverage_bps > (config.max_leverage as u128).saturating_mul(10_000) {
                 return Err(Error::MaxLeverageExceeded);
             }
         }
-        
-        Ok(position_key)
+
+        Ok(key)
     }
-    
-    // ========================================================================
-    // DECREASE POSITION
-    // ========================================================================
-    
+
     pub fn decrease_position(
         account: ActorId,
         market: String,
         collateral_token: String,
         is_long: bool,
         size_delta_usd: u128,
-        collateral_delta_amount: u128,
-        execution_price: u128,
+        collateral_delta_usd: u128,
+        execution_price_usd: u128,
     ) -> Result<PositionKey, Error> {
         let st = PerpetualDEXState::get_mut();
-        
-        // Get position
-        let position_key = PerpetualDEXState::get_position_key(
-            account,
-            &market,
-            &collateral_token,
-            is_long,
-        );
-        
-        let position = st.positions.get_mut(&position_key).ok_or(Error::PositionNotFound)?;
-        
-        // Check size
-        if size_delta_usd > position.size_in_usd {
-            return Err(Error::InsufficientPositionSize);
+        let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
+
+        let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
+
+        // Settle fees before decrease
+        let now = exec::block_timestamp();
+        {
+            let pos = st.positions.get_mut(&key).ok_or(Error::PositionNotFound)?;
+            RiskModule::settle_position_fees(pos, &market, now)?;
         }
-        
-        // Calculate PnL
-        let pnl = Self::calculate_pnl(position, execution_price);
-        
-        // Calculate proportional decrease
-        let size_delta_tokens = position.size_in_tokens * size_delta_usd / position.size_in_usd;
-        let pnl_delta = pnl * size_delta_usd as i128 / position.size_in_usd as i128;
-        
-        // Update position
-        position.size_in_usd -= size_delta_usd;
-        position.size_in_tokens -= size_delta_tokens;
-        position.decreased_at_block = exec::block_height();
-        
-        // Update collateral
-        if collateral_delta_amount > 0 {
-            if collateral_delta_amount > position.collateral_amount {
-                return Err(Error::InsufficientCollateral);
-            }
-            position.collateral_amount -= collateral_delta_amount;
+        let pos = st.positions.get_mut(&key).ok_or(Error::PositionNotFound)?;
+
+        if size_delta_usd > pos.size_usd { return Err(Error::InsufficientPositionSize); }
+        if collateral_delta_usd > pos.collateral_usd { return Err(Error::InsufficientCollateral); }
+
+        // PnL in USD (signed)
+        let pnl = Self::calculate_pnl(pos, execution_price_usd);
+
+        // Reduce size/collateral
+        pos.size_usd = pos.size_usd.saturating_sub(size_delta_usd);
+        pos.collateral_usd = pos.collateral_usd.saturating_sub(collateral_delta_usd);
+        pos.decreased_at_block = exec::block_height();
+
+        // Payout to user: withdrawn collateral + PnL
+        let mut payout_usd = collateral_delta_usd;
+        if pnl >= 0 {
+            payout_usd = payout_usd.saturating_add(pnl as u128);
+        } else {
+            let loss = pnl.unsigned_abs();
+            payout_usd = payout_usd.saturating_sub(payout_usd.min(loss));
         }
-        
-        // Calculate payout
-        let mut payout = collateral_delta_amount;
-        if pnl_delta > 0 {
-            payout += pnl_delta as u128;
-        } else if pnl_delta < 0 {
-            let loss = (-pnl_delta) as u128;
-            if loss >= payout {
-                payout = 0;
-            } else {
-                payout -= loss;
-            }
-        }
-        
-        // Update pool
+
+        // Update pool OI and liquidity (USD)
         let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
-        
         if is_long {
-            pool.long_oi -= size_delta_usd;
-            pool.long_oi_in_tokens -= size_delta_tokens;
-            
-            if pnl_delta > 0 {
-                // Trader profit → pool pays
-                if payout > pool.long_token_amount {
-                    return Err(Error::InsufficientPoolLiquidity);
-                }
-                pool.long_token_amount -= payout;
-            } else {
-                // Trader loss → pool gains
-                pool.long_token_amount -= collateral_delta_amount;
-            }
+            pool.long_oi_usd = pool.long_oi_usd.saturating_sub(size_delta_usd);
+            pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_sub(collateral_delta_usd);
         } else {
-            pool.short_oi -= size_delta_usd;
-            pool.short_oi_in_tokens -= size_delta_tokens;
-            
-            if pnl_delta > 0 {
-                if payout > pool.short_token_amount {
-                    return Err(Error::InsufficientPoolLiquidity);
+            pool.short_oi_usd = pool.short_oi_usd.saturating_sub(size_delta_usd);
+            pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(collateral_delta_usd);
+        }
+
+        // Return payout into user internal USD balance
+        let bal = st.balances.entry(account).or_insert(0);
+        *bal = bal.saturating_add(payout_usd);
+
+        // If position not closed — refresh liquidation price
+        if pos.size_usd > 0 {
+            pos.liquidation_price_usd = Self::calculate_liquidation_price(pos, config.liquidation_threshold_bps);
+        } else {
+            // Clean up closed position
+            st.positions.remove(&key);
+            if let Some(vec) = st.account_positions.get_mut(&account) {
+                if let Some(i) = vec.iter().position(|k| *k == key) {
+                    vec.swap_remove(i);
                 }
-                pool.short_token_amount -= payout;
-            } else {
-                pool.short_token_amount -= collateral_delta_amount;
             }
         }
-        
-        // If position fully closed, remove it
-        if position.size_in_usd == 0 {
-            st.positions.remove(&position_key);
-        } else {
-            // Update liquidation price
-            let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?;
-            position.liquidation_price = Self::calculate_liquidation_price(
-                position,
-                config.liquidation_threshold_bps,
-            );
-        }
-        
-        Ok(position_key)
+
+        Ok(key)
     }
-    
-    // ========================================================================
-    // CALCULATIONS
-    // ========================================================================
-    
-    fn calculate_pnl(position: &Position, current_price: u128) -> i128 {
-        let price_delta = if position.is_long {
-            current_price as i128 - position.entry_price as i128
+
+    fn calculate_pnl(pos: &Position, current_price_usd: u128) -> i128 {
+        // tokens = size_usd / entry_price
+        // PnL = (current - entry) * tokens
+        if pos.entry_price_usd == 0 { return 0; }
+        let tokens_usdx = pos.size_usd.saturating_mul(USD_SCALE) / pos.entry_price_usd; // USD * 1e6 / USD = 1e6 "token units"
+        let price_delta = if pos.is_long {
+            current_price_usd as i128 - pos.entry_price_usd as i128
         } else {
-            position.entry_price as i128 - current_price as i128
+            pos.entry_price_usd as i128 - current_price_usd as i128
         };
-        
-        position.size_in_tokens as i128 * price_delta / 1_000000
+        // (price_delta * tokens) / USD_SCALE  -> USD
+        (price_delta.saturating_mul(tokens_usdx as i128)) / (USD_SCALE as i128)
     }
-    
-    fn calculate_liquidation_price(
-        position: &Position,
-        liquidation_threshold_bps: u16,
-    ) -> u128 {
-        let threshold_value = position.collateral_amount * liquidation_threshold_bps as u128 / 10000;
-        let size_in_tokens = position.size_in_tokens;
-        
-        if size_in_tokens == 0 {
-            return 0;
-        }
-        
-        if position.is_long {
-            let loss_allowed = if position.collateral_amount > threshold_value {
-                position.collateral_amount - threshold_value
-            } else {
-                0
-            };
-            
-            let price_drop = loss_allowed * 1_000000 / size_in_tokens;
-            
-            if price_drop >= position.entry_price {
-                0
-            } else {
-                position.entry_price - price_drop
-            }
+
+    fn calculate_liquidation_price(pos: &Position, liq_bps: u16) -> u128 {
+        if pos.size_usd == 0 || pos.entry_price_usd == 0 { return 0; }
+        let threshold_usd = (pos.collateral_usd.saturating_mul(liq_bps as u128)) / 10_000;
+
+        // tokens in 1e6 units
+        let tokens_usdx = pos.size_usd.saturating_mul(USD_SCALE) / pos.entry_price_usd;
+        if tokens_usdx == 0 { return 0; }
+
+        let loss_allowed = pos.collateral_usd.saturating_sub(threshold_usd);
+        // price move such that |loss| == loss_allowed:
+        // loss = tokens * |delta_price| / USD_SCALE  =>  |delta_price| = loss * USD_SCALE / tokens
+        let delta = loss_allowed.saturating_mul(USD_SCALE) / tokens_usdx;
+
+        if pos.is_long {
+            pos.entry_price_usd.saturating_sub(delta)
         } else {
-            let loss_allowed = if position.collateral_amount > threshold_value {
-                position.collateral_amount - threshold_value
-            } else {
-                0
-            };
-            
-            let price_rise = loss_allowed * 1_000000 / size_in_tokens;
-            position.entry_price + price_rise
+            pos.entry_price_usd.saturating_add(delta)
         }
     }
-    
-    fn usd_to_tokens(usd_amount: u128, price: u128) -> u128 {
-        if price == 0 {
-            return 0;
-        }
-        usd_amount * 1_000000 / price
-    }
-    
-    // ========================================================================
-    // QUERIES
-    // ========================================================================
-    
+
     pub fn get_position(key: &PositionKey) -> Result<Position, Error> {
         let st = PerpetualDEXState::get();
         st.positions.get(key).cloned().ok_or(Error::PositionNotFound)
     }
-    
+
     pub fn get_account_positions(account: ActorId) -> Vec<Position> {
         let st = PerpetualDEXState::get();
-        st.positions
-            .values()
-            .filter(|p| p.account == account)
-            .cloned()
-            .collect()
+        st.positions.values().filter(|p| p.account == account).cloned().collect()
     }
-    
+
     pub fn get_position_pnl(key: &PositionKey, current_price: u128) -> Result<i128, Error> {
-        let position = Self::get_position(key)?;
-        Ok(Self::calculate_pnl(&position, current_price))
+        let pos = Self::get_position(key)?;
+        Ok(Self::calculate_pnl(&pos, current_price))
     }
 }

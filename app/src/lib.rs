@@ -29,12 +29,13 @@ pub struct PerpetualDEXState {
     pub withdrawal_requests: HashMap<RequestKey, WithdrawalRequest>,
     pub orders: HashMap<RequestKey, Order>,
     pub account_orders: HashMap<ActorId, Vec<RequestKey>>,
-    pub order_counter: u64,  // ✅ ADDED for TradingModule
+    pub order_counter: u64,
     pub oracle: OracleState,
     pub admin: ActorId,
     pub keepers: Vec<ActorId>,
     pub liquidators: Vec<ActorId>,
     pub next_request_id: u64,
+    pub balances: HashMap<ActorId, Usd>,
 }
 
 impl PerpetualDEXState {
@@ -50,12 +51,13 @@ impl PerpetualDEXState {
             withdrawal_requests: HashMap::new(),
             orders: HashMap::new(),
             account_orders: HashMap::new(),
-            order_counter: 0,  // ✅ ADDED
+            order_counter: 0,
             oracle: OracleState::new(),
             admin,
             keepers: Vec::new(),
             liquidators: Vec::new(),
             next_request_id: 1,
+            balances: HashMap::new(),
         }
     }
 
@@ -102,7 +104,7 @@ impl PerpetualDEXState {
     }
 }
 
-use services::{TradingService, ExecutorService, AdminService, OracleService, ViewService};
+use services::{TradingService, ExecutorService, AdminService, OracleService, ViewService, WalletService, MarketService};
 
 pub struct VaraPerpDexProgram(());
 
@@ -121,4 +123,5 @@ impl VaraPerpDexProgram {
     pub fn view(&self) -> ViewService { Default::default() }
     pub fn admin(&self) -> AdminService { Default::default() }
     pub fn oracle(&self) -> OracleService { Default::default() }
-}
+    pub fn wallet(&self) -> WalletService { Default::default() }
+    pub fn market(&self) -> MarketService { Default::default() }
