@@ -1,5 +1,6 @@
 use crate::{
     types::*,
+    utils,
     errors::Error,
     PerpetualDEXState,
     modules::oracle::OracleModule,
@@ -29,7 +30,8 @@ impl PricingModule {
         let cfg = st.market_configs.get(market).ok_or(Error::MarketNotFound)?;
         let pool = st.pool_amounts.get(market).ok_or(Error::MarketNotFound)?;
 
-        let mid = OracleModule::mid(market)?;
+        let price_key = utils::price_key(&params.market);
+        let mid = OracleModule::mid(&price_key)?;
         let spread = OracleModule::spread(market)?;
         let ask = mid.saturating_add(spread / 2);
         let bid = mid.saturating_sub(spread / 2);

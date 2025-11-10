@@ -2,6 +2,7 @@ use sails_rs::{prelude::*, gstd::msg};
 use crate::{
     errors::Error,
     types::*,
+    utils,
     modules::{trading::TradingModule, position::PositionModule, risk::RiskModule, oracle::OracleModule},
     PerpetualDEXState,
 };
@@ -37,26 +38,19 @@ impl ExecutorService {
     ) -> Result<(), Error> {
         let liquidator = msg::source();
         let st = PerpetualDEXState::get();
-        
-        // Check liquidator is authorized
         if !st.is_keeper(liquidator) && !st.is_liquidator(liquidator) {
             return Err(Error::NotLiquidator);
         }
 
         let position = PositionModule::get_position(&position_key)?;
-        
-        // Get current price
-        let current_price = OracleModule::mid(&position.market)?;
-        
-        // Get liquidation threshold from config
+        let price_key = utils::price_key(&position.market);
+        let current_price = OracleModule::mid(&price_key)?;
+
         let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?;
-        
-        // Check if liquidatable
         if !RiskModule::is_liquidatable(&position, current_price, config.liquidation_threshold_bps) {
             return Err(Error::PositionNotLiquidatable);
         }
 
-        // Close the position
         PositionModule::decrease_position(
             position.account,
             position.market.clone(),
@@ -67,9 +61,6 @@ impl ExecutorService {
             current_price,
         )?;
 
-        // In production, would pay liquidation reward to liquidator
-        // For now, just emit event (events system TODO)
-        
         Ok(())
     }
 
@@ -77,11 +68,11 @@ impl ExecutorService {
     #[export]
     pub fn can_liquidate(&self, position_key: PositionKey) -> Result<bool, Error> {
         let position = PositionModule::get_position(&position_key)?;
-        let current_price = OracleModule::mid(&position.market)?;
-        
+        let price_key = utils::price_key(&position.market);
+        let current_price = OracleModule::mid(&price_key)?;
+
         let st = PerpetualDEXState::get();
         let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?;
-        
         Ok(RiskModule::is_liquidatable(&position, current_price, config.liquidation_threshold_bps))
     }
 
@@ -91,11 +82,12 @@ impl ExecutorService {
         let st = PerpetualDEXState::get();
         let mut liquidatable = Vec::new();
 
-        for (key, position) in st.positions.iter() {
-            if let Ok(current_price) = OracleModule::mid(&position.market) {
+        for (position_key, position) in st.positions.iter() {
+            let price_key = utils::price_key(&position.market);
+            if let Ok(current_price) = OracleModule::mid(&price_key) {
                 if let Some(config) = st.market_configs.get(&position.market) {
                     if RiskModule::is_liquidatable(position, current_price, config.liquidation_threshold_bps) {
-                        liquidatable.push(*key);
+                        liquidatable.push(*position_key);
                     }
                 }
             }
@@ -110,9 +102,9 @@ impl ExecutorService {
         let orders = TradingModule::get_pending_orders();
         let mut executable = Vec::new();
 
-        for (key, order) in orders {
-            if let Ok(mid) = OracleModule::mid(&order.market) {
-                // Check if order trigger conditions are met
+        for (order_key, order) in orders {
+            let price_key = utils::price_key(&order.market);
+            if let Ok(mid) = OracleModule::mid(&price_key) {
                 let can_execute = match order.order_type {
                     OrderType::LimitIncrease => {
                         if order.is_long { mid <= order.trigger_price } else { mid >= order.trigger_price }
@@ -127,7 +119,7 @@ impl ExecutorService {
                 };
 
                 if can_execute {
-                    executable.push(key);
+                    executable.push(order_key);
                 }
             }
         }

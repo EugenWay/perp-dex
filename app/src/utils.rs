@@ -35,3 +35,14 @@ pub fn verify_signature(
     // WARNING: This stub returns true for all signatures - NOT SAFE for production!
     true
 }
+
+/// Resolve market ID or token name to the correct oracle price key.
+/// If given a known market ID, returns its `index_token`
+pub fn price_key(id_or_token: &str) -> String {
+    let st = crate::PerpetualDEXState::get();
+    if let Some(m) = st.markets.get(id_or_token) {
+        m.index_token.clone()
+    } else {
+        id_or_token.to_string()
+    }
+}

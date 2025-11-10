@@ -1,6 +1,7 @@
 use sails_rs::prelude::*;
 use crate::{
     types::*,
+    utils,
     errors::Error,
     PerpetualDEXState,
     modules::oracle::OracleModule,
@@ -56,7 +57,8 @@ impl MarketModule {
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
         // Convert token amounts to USD via oracle mid
-        let mid = OracleModule::mid(&market_id)?; // market_id is also index_token key
+        let price_key = utils::price_key(&params.market);
+        let mid = OracleModule::mid(&price_key)?;
         // USD = tokens * price  (price already in USD per 1 unit)
         let long_usd  = long_token_amount.saturating_mul(mid) / USD_SCALE;
         let short_usd = short_token_amount.saturating_mul(mid) / USD_SCALE;
@@ -113,7 +115,8 @@ impl MarketModule {
         let total_short_usd = short_usd.saturating_add(fee_short_usd);
 
         // Convert USD back to token amounts via current mid
-        let mid = OracleModule::mid(&market_id)?;
+        let price_key = utils::price_key(&params.market);
+        let mid = OracleModule::mid(&price_key)?;
         // tokens = USD * USD_SCALE / price
         let long_out_tokens  = total_long_usd .saturating_mul(USD_SCALE) / mid;
         let short_out_tokens = total_short_usd.saturating_mul(USD_SCALE) / mid;

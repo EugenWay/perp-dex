@@ -3,6 +3,7 @@ use crate::{
     types::*,
     errors::Error,
     PerpetualDEXState,
+    utils,
     modules::{oracle::OracleModule, pricing::PricingModule, position::PositionModule, risk::RiskModule},
 };
 
@@ -14,14 +15,16 @@ impl TradingModule {
         if !st.markets.contains_key(&params.market) { return Err(Error::MarketNotFound); }
         if !st.market_configs.contains_key(&params.market) { return Err(Error::MarketNotFound); }
         Self::validate_order_params(&params)?;
-        OracleModule::ensure_fresh(&params.market)?;
+
+        let price_key = utils::price_key(&params.market);
+        OracleModule::ensure_fresh(&price_key)?;
 
         match params.order_type {
             OrderType::MarketIncrease | OrderType::MarketDecrease => {
                 Self::execute_market_order(caller, params)
             }
             OrderType::LimitIncrease | OrderType::LimitDecrease | OrderType::StopLossDecrease => {
-                let mid = OracleModule::mid(&params.market)?;
+                let mid = OracleModule::mid(&price_key)?;
                 if Self::can_execute_limit_order(&params, mid) {
                     Self::execute_limit_order(caller, params)
                 } else {
@@ -94,8 +97,10 @@ impl TradingModule {
         let order = st.orders.get(&key).ok_or(Error::OrderNotFound)?.clone();
         if order.status != OrderStatus::Created { return Err(Error::OrderAlreadyProcessed); }
 
-        OracleModule::ensure_fresh(&order.market)?;
-        let mid = OracleModule::mid(&order.market)?;
+        let price_key = utils::price_key(&order.market);
+        OracleModule::ensure_fresh(&price_key)?;
+        let mid = OracleModule::mid(&price_key)?;
+
         let params = Self::order_to_params(&order);
         if !Self::can_execute_limit_order(&params, mid) { return Err(Error::OrderCannotBeExecutedYet); }
 
@@ -188,7 +193,6 @@ impl TradingModule {
     }
 
     fn execute_position_change(caller: ActorId, p: &CreateOrderParams, price: u128) -> Result<PositionKey, Error> {
-        // Accrue pool fees before any position change
         let now = exec::block_timestamp();
         RiskModule::accrue_pool(&p.market, now)?;
 

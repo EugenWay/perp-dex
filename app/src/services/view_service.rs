@@ -3,6 +3,7 @@ use crate::{
     types::*,
     errors::Error,
     modules::{position::PositionModule, market::MarketModule, oracle::OracleModule},
+    utils,
     PerpetualDEXState,
 };
 
@@ -62,7 +63,8 @@ impl ViewService {
     #[export]
     pub fn get_position_pnl(&self, key: PositionKey) -> Result<i128, Error> {
         let pos = PositionModule::get_position(&key)?;
-        let current_price = OracleModule::mid(&pos.market)?;
+        let price_key = utils::price_key(&pos.market);
+        let current_price = OracleModule::mid(&price_key)?;
         PositionModule::get_position_pnl(&key, current_price)
     }
 
