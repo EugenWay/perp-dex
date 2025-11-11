@@ -59,14 +59,18 @@ impl PositionModule {
             }
         };
 
-        // Weighted average entry
+       // Weighted average entry
         if pos.size_usd > 0 {
-            let total_cost_usd = pos.size_usd
-                .saturating_mul(pos.entry_price_usd) / USD_SCALE
-                + size_delta_usd.saturating_mul(execution_price_usd) / USD_SCALE;
-            let total_size_usd = pos.size_usd.saturating_add(size_delta_usd);
-            if total_size_usd == 0 { return Err(Error::MathOverflow); }
-            pos.entry_price_usd = total_cost_usd.saturating_mul(USD_SCALE) / total_size_usd;
+            let old_notional = pos.size_usd;
+            let new_notional = size_delta_usd;
+            let total_size   = old_notional.saturating_add(new_notional);
+            if total_size == 0 {
+                return Err(Error::MathOverflow);
+            }
+            pos.entry_price_usd =
+                old_notional.saturating_mul(pos.entry_price_usd)
+                .saturating_add(new_notional.saturating_mul(execution_price_usd))
+                / total_size;
         } else {
             pos.entry_price_usd = execution_price_usd;
         }
