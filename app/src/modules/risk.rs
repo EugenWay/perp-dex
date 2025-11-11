@@ -80,9 +80,17 @@ impl RiskModule {
 
         let imbalance = (pool.long_oi_usd as i128) - (pool.short_oi_usd as i128);
         let ratio_bps = (imbalance.saturating_mul(10_000)) / (total_oi as i128);
-        let base = (ratio_bps.saturating_mul(cfg.funding_factor as i128)) / 10_000;
-        let exponent = cfg.funding_exponent.max(1);
-        let rate = base.saturating_mul(exponent as i128) / 10_000;
+
+        let mut base = ratio_bps.unsigned_abs() as i128;
+        let exp = cfg.funding_exponent.max(1);
+        let mut i = 1u128;
+        while i < exp {
+            base = base.saturating_mul(ratio_bps.unsigned_abs() as i128) / 10_000;
+            i += 1;
+        }
+
+        let rate_bps = (base.saturating_mul(cfg.funding_factor as i128)) / 10_000;
+        let rate = if imbalance > 0 { rate_bps } else if imbalance < 0 { -rate_bps } else { 0 };
 
         let seconds_per_year = 365 * 24 * 60 * 60u128;
         let time_adj = rate.saturating_mul(dt as i128) / (seconds_per_year as i128);
