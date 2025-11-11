@@ -16,7 +16,10 @@ use core::cell::{Ref, RefMut};
 
 use types::*;
 
-static STATE: RefCell<Option<PerpetualDEXState>> = RefCell::new(None);
+struct SyncRefCell<T>(RefCell<T>);
+unsafe impl<T> Sync for SyncRefCell<T> {}
+
+static STATE: SyncRefCell<Option<PerpetualDEXState>> = SyncRefCell(RefCell::new(None));
 
 #[derive(Debug, Clone)]
 pub struct PerpetualDEXState {
@@ -62,23 +65,22 @@ impl PerpetualDEXState {
         }
     }
 
-    // ✅ ПРАВИЛЬНО: используем core::cell::Ref вместо std::cell::Ref
     pub fn get() -> Ref<'static, Self> {
         Ref::map(
-            STATE.borrow(),
+            STATE.0.borrow(),
             |opt| opt.as_ref().expect("State not initialized")
         )
     }
 
     pub fn get_mut() -> RefMut<'static, Self> {
         RefMut::map(
-            STATE.borrow_mut(),
+            STATE.0.borrow_mut(),
             |opt| opt.as_mut().expect("State not initialized")
         )
     }
 
     pub fn init(admin: ActorId) {
-        let mut state = STATE.borrow_mut();
+        let mut state = STATE.0.borrow_mut();
         if state.is_some() {
             panic!("State already initialized");
         }

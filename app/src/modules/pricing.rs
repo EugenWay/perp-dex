@@ -5,22 +5,24 @@ use crate::{
     PerpetualDEXState,
     modules::oracle::OracleModule,
 };
-use crate::types::OrderSide;
+use core::cmp;
 
 #[derive(Clone, Debug)]
 pub struct QuoteResult {
     pub execution_price: u128,
-    pub price_impact: i128,      // bps signed
-    pub price_impact_usd: i128,  // signed USD
+    pub price_impact: i128,      // bps (signed)
+    pub price_impact_usd: i128,  // signed USD (приближенно от размера)
 }
 
 pub struct PricingModule;
 
 impl PricingModule {
+    /// Квот на увеличение позиции
     pub fn quote_increase(market: &str, side: &OrderSide, size_usd: u128) -> Result<QuoteResult, Error> {
         Self::quote(market, side, size_usd, true)
     }
 
+    /// Квот на уменьшение позиции
     pub fn quote_decrease(market: &str, side: &OrderSide, size_usd: u128) -> Result<QuoteResult, Error> {
         Self::quote(market, side, size_usd, false)
     }
@@ -32,30 +34,38 @@ impl PricingModule {
 
         let price_key = utils::price_key(market);
         let mid = OracleModule::mid(&price_key)?;
-        let spread = OracleModule::spread(market)?;
+        let spread = OracleModule::spread(&price_key)?;
         let ask = mid.saturating_add(spread / 2);
         let bid = mid.saturating_sub(spread / 2);
 
         let impact_bps = Self::calculate_price_impact(pool, cfg, side, size_usd, is_increase)?;
-        let (base, sign_worse_for_trader) = match side {
+
+        let (base, worse_for_trader) = match side {
             OrderSide::Long  => (if is_increase { ask } else { bid }, is_increase),
             OrderSide::Short => (if is_increase { bid } else { ask }, is_increase),
         };
 
-        let impact_amount = base.saturating_mul(impact_bps.unsigned_abs() as u128) / 10_000;
-        let exec = if (impact_bps >= 0) == sign_worse_for_trader {
-            // worse for trader
-            if matches!(side, OrderSide::Long) == is_increase { base.saturating_add(impact_amount) } else { base.saturating_sub(impact_amount) }
+        let impact_abs = base.saturating_mul(impact_bps.unsigned_abs() as u128) / 10_000;
+
+        let exec_unclamped = if (impact_bps >= 0) == worse_for_trader {
+            if matches!(side, OrderSide::Long) == is_increase {
+                base.saturating_add(impact_abs)
+            } else {
+                base.saturating_sub(impact_abs)
+            }
         } else {
-            // better for trader
-            if matches!(side, OrderSide::Long) == is_increase { base.saturating_sub(impact_amount) } else { base.saturating_add(impact_amount) }
+            if matches!(side, OrderSide::Long) == is_increase {
+                base.saturating_sub(impact_abs)
+            } else {
+                base.saturating_add(impact_abs)
+            }
         };
 
-        // clamp ±10%
         let max_dev = mid / 10;
-        let execution_price = exec.max(mid.saturating_sub(max_dev)).min(mid.saturating_add(max_dev));
+        let execution_price = exec_unclamped
+            .max(mid.saturating_sub(max_dev))
+            .min(mid.saturating_add(max_dev));
 
-        // approximate impact in USD relative to size
         let price_impact_usd = ((execution_price as i128 - base as i128) * size_usd as i128) / (mid as i128);
 
         Ok(QuoteResult {
@@ -77,10 +87,17 @@ impl PricingModule {
         if depth == 0 { return Ok(0); }
 
         let imbalance_abs = imbalance.unsigned_abs() as u128;
-        let ratio_bps = (imbalance_abs.saturating_mul(10_000)) / depth; // bps
+        // 0..=10000 bps
+        let ratio_bps = (imbalance_abs.saturating_mul(10_000)) / depth;
 
-        let exponent = cfg.pi_exponent.max(1);
-        let impact_base = ratio_bps.saturating_mul(exponent) / 10_000;
+        let exp: u128 = cmp::max(1u128, cmp::min(cfg.pi_exponent, 8u128));
+        let mut impact_base = ratio_bps; // bps
+        let mut i = 1u128;
+        while i < exp {
+            // (impact_base * ratio_bps) / 10_000 => остаёмся в bps
+            impact_base = impact_base.saturating_mul(ratio_bps) / 10_000;
+            i += 1;
+        }
 
         let is_long = matches!(side, OrderSide::Long);
         let pi_factor = if is_increase {
@@ -90,22 +107,22 @@ impl PricingModule {
                 cfg.pi_factor_negative
             }
         } else {
-            if (is_long && imbalance > 0) || (!is_long && imbalance < 0) {
+            if (is_long && imbalance > 0) || (!is_long && imbalance <= 0) {
                 cfg.pi_factor_negative
             } else {
                 cfg.pi_factor_positive
             }
         };
 
-        let impact_bps = (impact_base.saturating_mul(pi_factor) / 10_000) as i128;
+        let raw_impact_bps = impact_base.saturating_mul(pi_factor) / 10_000;
+        let impact_bps = raw_impact_bps as i128;
 
-        // sign: positive if making imbalance worse
         let signed = if is_increase {
             if (is_long && imbalance >= 0) || (!is_long && imbalance < 0) { impact_bps } else { -impact_bps }
         } else {
             if (is_long && imbalance > 0) || (!is_long && imbalance <= 0) { -impact_bps } else { impact_bps }
         };
 
-        Ok(signed.max(-500).min(500)) // cap ±5%
+        Ok(signed.max(-500).min(500))
     }
 }

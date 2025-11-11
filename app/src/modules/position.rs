@@ -30,34 +30,33 @@ impl PositionModule {
         let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
         let now = exec::block_timestamp();
 
-        // Settle fees if exists
-        if st.positions.contains_key(&key) {
-            let pos = st.positions.get_mut(&key).unwrap();
-            RiskModule::settle_position_fees(pos, &market, now)?;
-        }
-
-        let pos = if let Some(p) = st.positions.get_mut(&key) {
-            p
-        } else {
-            let p = Position {
-                key,
-                account,
-                market: market.clone(),
-                collateral_token: collateral_token.clone(),
-                is_long,
-                size_usd: 0,
-                collateral_usd: 0,
-                entry_price_usd: execution_price_usd,
-                liquidation_price_usd: 0,
-                funding_fee_per_usd: 0,
-                borrowing_factor: 0,
-                increased_at_block: exec::block_height(),
-                decreased_at_block: 0,
-                last_fee_update: now,
-            };
-            st.positions.insert(key, p);
-            st.account_positions.entry(account).or_insert_with(Vec::new).push(key);
-            st.positions.get_mut(&key).unwrap()
+        // Take position by ownership (or create)
+        let mut pos = match st.positions.remove(&key) {
+            Some(mut p) => {
+                // settle fees on existing position
+                RiskModule::settle_position_fees(&mut p, &market, now)?;
+                p
+            }
+            None => {
+                // register new key in account_positions
+                st.account_positions.entry(account).or_insert_with(Vec::new).push(key);
+                Position {
+                    key,
+                    account,
+                    market: market.clone(),
+                    collateral_token: collateral_token.clone(),
+                    is_long,
+                    size_usd: 0,
+                    collateral_usd: 0,
+                    entry_price_usd: execution_price_usd,
+                    liquidation_price_usd: 0,
+                    funding_fee_per_usd: 0,
+                    borrowing_factor: 0,
+                    increased_at_block: exec::block_height(),
+                    decreased_at_block: 0,
+                    last_fee_update: now,
+                }
+            }
         };
 
         // Weighted average entry
@@ -83,15 +82,16 @@ impl PositionModule {
         }
 
         // Deduct user balance (collateral part)
-        let entry = st.balances.get_mut(&account).unwrap();
-        *entry = entry.saturating_sub(collateral_delta_usd);
+        let bal_entry = st.balances.entry(account).or_insert(0);
+        *bal_entry = bal_entry.saturating_sub(collateral_delta_usd);
 
-        // Update position
+        // Update position amounts
         pos.size_usd = pos.size_usd.saturating_add(size_delta_usd);
         pos.collateral_usd = pos.collateral_usd.saturating_add(collateral_delta_usd);
         pos.increased_at_block = exec::block_height();
 
         // Update pool OI and liquidity backing (USD)
+        let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
         if is_long {
             pool.long_oi_usd = pool.long_oi_usd.saturating_add(size_delta_usd);
             pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_add(collateral_delta_usd);
@@ -101,7 +101,7 @@ impl PositionModule {
         }
 
         // Liquidation price cache
-        pos.liquidation_price_usd = Self::calculate_liquidation_price(pos, config.liquidation_threshold_bps);
+        pos.liquidation_price_usd = Self::calculate_liquidation_price(&pos, config.liquidation_threshold_bps);
 
         // Leverage check
         if pos.collateral_usd > 0 {
@@ -110,6 +110,9 @@ impl PositionModule {
                 return Err(Error::MaxLeverageExceeded);
             }
         }
+
+        // Put position back
+        st.positions.insert(key, pos);
 
         Ok(key)
     }
@@ -128,19 +131,18 @@ impl PositionModule {
 
         let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
 
+        // Take position by ownership
+        let mut pos = st.positions.remove(&key).ok_or(Error::PositionNotFound)?;
+
         // Settle fees before decrease
         let now = exec::block_timestamp();
-        {
-            let pos = st.positions.get_mut(&key).ok_or(Error::PositionNotFound)?;
-            RiskModule::settle_position_fees(pos, &market, now)?;
-        }
-        let pos = st.positions.get_mut(&key).ok_or(Error::PositionNotFound)?;
+        RiskModule::settle_position_fees(&mut pos, &market, now)?;
 
         if size_delta_usd > pos.size_usd { return Err(Error::InsufficientPositionSize); }
         if collateral_delta_usd > pos.collateral_usd { return Err(Error::InsufficientCollateral); }
 
         // PnL in USD (signed)
-        let pnl = Self::calculate_pnl(pos, execution_price_usd);
+        let pnl = Self::calculate_pnl(&pos, execution_price_usd);
 
         // Reduce size/collateral
         pos.size_usd = pos.size_usd.saturating_sub(size_delta_usd);
@@ -170,12 +172,11 @@ impl PositionModule {
         let bal = st.balances.entry(account).or_insert(0);
         *bal = bal.saturating_add(payout_usd);
 
-        // If position not closed — refresh liquidation price
+        // If position not closed — refresh liquidation price and insert back; else cleanup
         if pos.size_usd > 0 {
-            pos.liquidation_price_usd = Self::calculate_liquidation_price(pos, config.liquidation_threshold_bps);
+            pos.liquidation_price_usd = Self::calculate_liquidation_price(&pos, config.liquidation_threshold_bps);
+            st.positions.insert(key, pos);
         } else {
-            // Clean up closed position
-            st.positions.remove(&key);
             if let Some(vec) = st.account_positions.get_mut(&account) {
                 if let Some(i) = vec.iter().position(|k| *k == key) {
                     vec.swap_remove(i);
@@ -209,8 +210,7 @@ impl PositionModule {
         if tokens_usdx == 0 { return 0; }
 
         let loss_allowed = pos.collateral_usd.saturating_sub(threshold_usd);
-        // price move such that |loss| == loss_allowed:
-        // loss = tokens * |delta_price| / USD_SCALE  =>  |delta_price| = loss * USD_SCALE / tokens
+        // |delta_price| = loss * USD_SCALE / tokens
         let delta = loss_allowed.saturating_mul(USD_SCALE) / tokens_usdx;
 
         if pos.is_long {

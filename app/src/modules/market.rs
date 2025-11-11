@@ -59,31 +59,46 @@ impl MarketModule {
         // Convert token amounts to USD via oracle mid
         let price_key = utils::price_key(&market_id);
         let mid = OracleModule::mid(&price_key)?;
-        // USD = tokens * price  (price already in USD per 1 unit)
+        // USD = tokens * price (price already in USD per 1 unit)
         let long_usd  = long_token_amount.saturating_mul(mid) / USD_SCALE;
         let short_usd = short_token_amount.saturating_mul(mid) / USD_SCALE;
 
-        let pool = st.pool_amounts.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
-        let mt = st.market_tokens.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
+        // Immutable snapshots for calculations and checks
+        let (pool_long_liq, pool_short_liq) = {
+            let pool = st.pool_amounts.get(&market_id).ok_or(Error::MarketNotFound)?;
+            (pool.long_liquidity_usd, pool.short_liquidity_usd)
+        };
+        let total_supply_snapshot = {
+            let mt = st.market_tokens.get(&market_id).ok_or(Error::MarketNotFound)?;
+            mt.total_supply
+        };
 
-        // If first LP — simple sum
-        let mint_amount = if mt.total_supply == 0 {
+        // Compute mint amount on snapshots
+        let mint_amount = if total_supply_snapshot == 0 {
             long_usd.saturating_add(short_usd)
         } else {
-            let total_pool_value = pool.long_liquidity_usd.saturating_add(pool.short_liquidity_usd);
+            let total_pool_value = pool_long_liq.saturating_add(pool_short_liq);
             if total_pool_value == 0 { return Err(Error::InsufficientLiquidity); }
             let added_value = long_usd.saturating_add(short_usd);
-            mt.total_supply.saturating_mul(added_value) / total_pool_value
+            total_supply_snapshot.saturating_mul(added_value) / total_pool_value
         };
 
         if mint_amount < min_mint { return Err(Error::SlippageExceeded); }
 
+        // Mutations: remove → work → insert (to avoid overlapping &mut borrows)
+        let mut pool = st.pool_amounts.remove(&market_id).ok_or(Error::MarketNotFound)?;
+        let mut mt   = st.market_tokens.remove(&market_id).ok_or(Error::MarketNotFound)?;
+
         // Update pool in USD
-        pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_add(long_usd);
+        pool.long_liquidity_usd  = pool.long_liquidity_usd.saturating_add(long_usd);
         pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_add(short_usd);
 
-        // Mint market tokens to LP (balances updated by service layer; here just supply)
+        // Update supply
         mt.total_supply = mt.total_supply.saturating_add(mint_amount);
+
+        // Insert back
+        st.pool_amounts.insert(market_id.clone(), pool);
+        st.market_tokens.insert(market_id, mt);
 
         Ok(mint_amount)
     }
@@ -99,17 +114,29 @@ impl MarketModule {
         let mut st = PerpetualDEXState::get_mut();
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
-        let pool = st.pool_amounts.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
-        let mt = st.market_tokens.get_mut(&market_id).ok_or(Error::MarketNotFound)?;
-        if mt.total_supply == 0 { return Err(Error::InsufficientLiquidity); }
+        // Immutable snapshots for calculations and checks
+        let (pool_long_liq, pool_short_liq, fee_long_total, fee_short_total) = {
+            let pool = st.pool_amounts.get(&market_id).ok_or(Error::MarketNotFound)?;
+            (
+                pool.long_liquidity_usd,
+                pool.short_liquidity_usd,
+                pool.claimable_fee_usd_long,
+                pool.claimable_fee_usd_short,
+            )
+        };
+        let total_supply_snapshot = {
+            let mt = st.market_tokens.get(&market_id).ok_or(Error::MarketNotFound)?;
+            if mt.total_supply == 0 { return Err(Error::InsufficientLiquidity); }
+            mt.total_supply
+        };
 
-        // Proportional share in USD
-        let long_usd  = pool.long_liquidity_usd .saturating_mul(market_token_amount) / mt.total_supply;
-        let short_usd = pool.short_liquidity_usd.saturating_mul(market_token_amount) / mt.total_supply;
+        // Proportional share in USD (on snapshots)
+        let long_usd  = pool_long_liq .saturating_mul(market_token_amount) / total_supply_snapshot;
+        let short_usd = pool_short_liq.saturating_mul(market_token_amount) / total_supply_snapshot;
 
         // Include claimable fees proportionally (USD)
-        let fee_long_usd  = pool.claimable_fee_usd_long .saturating_mul(market_token_amount) / mt.total_supply;
-        let fee_short_usd = pool.claimable_fee_usd_short.saturating_mul(market_token_amount) / mt.total_supply;
+        let fee_long_usd  = fee_long_total .saturating_mul(market_token_amount) / total_supply_snapshot;
+        let fee_short_usd = fee_short_total.saturating_mul(market_token_amount) / total_supply_snapshot;
 
         let total_long_usd  = long_usd .saturating_add(fee_long_usd);
         let total_short_usd = short_usd.saturating_add(fee_short_usd);
@@ -125,7 +152,11 @@ impl MarketModule {
             return Err(Error::SlippageExceeded);
         }
 
-        // Deduct from pool USD
+        // Mutations: remove → work → insert (to avoid overlapping &mut borrows)
+        let mut pool = st.pool_amounts.remove(&market_id).ok_or(Error::MarketNotFound)?;
+        let mut mt   = st.market_tokens.remove(&market_id).ok_or(Error::MarketNotFound)?;
+
+        // Deduct from pool USD (only principal parts; fees also proportional)
         pool.long_liquidity_usd  = pool.long_liquidity_usd .saturating_sub(long_usd);
         pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(short_usd);
         pool.claimable_fee_usd_long  = pool.claimable_fee_usd_long .saturating_sub(fee_long_usd);
@@ -133,6 +164,10 @@ impl MarketModule {
 
         // Burn
         mt.total_supply = mt.total_supply.saturating_sub(market_token_amount);
+
+        // Insert back
+        st.pool_amounts.insert(market_id.clone(), pool);
+        st.market_tokens.insert(market_id, mt);
 
         Ok((long_out_tokens, short_out_tokens))
     }
