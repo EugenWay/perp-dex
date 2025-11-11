@@ -9,6 +9,7 @@ pub struct SignedPrice {
     pub token: String,
     pub price: Price,
     pub timestamp: u64,
+    pub nonce: u64,
     pub signer: ActorId,
     pub signature: Vec<u8>,
 }
