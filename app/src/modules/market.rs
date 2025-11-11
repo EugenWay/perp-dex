@@ -56,12 +56,13 @@ impl MarketModule {
         let mut st = PerpetualDEXState::get_mut();
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
-        // Convert token amounts to USD via oracle mid
-        let price_key = utils::price_key(&market_id);
-        let mid = OracleModule::mid(&price_key)?;
-        // USD = tokens * price (price already in USD per 1 unit)
-        let long_usd  = long_token_amount.saturating_mul(mid) / USD_SCALE;
-        let short_usd = short_token_amount.saturating_mul(mid) / USD_SCALE;
+        let market = st.markets.get(&market_id).ok_or(Error::MarketNotFound)?;
+        let long_price  = OracleModule::mid(&market.long_token)?;
+        let short_price = OracleModule::mid(&market.short_token)?;
+
+        // USD = tokens * token_price / USD_SCALE
+        let long_usd  = long_token_amount.saturating_mul(long_price)  / USD_SCALE;
+        let short_usd = short_token_amount.saturating_mul(short_price) / USD_SCALE;
 
         // Immutable snapshots for calculations and checks
         let (pool_long_liq, pool_short_liq) = {
@@ -114,6 +115,10 @@ impl MarketModule {
         let mut st = PerpetualDEXState::get_mut();
         if !st.markets.contains_key(&market_id) { return Err(Error::MarketNotFound); }
 
+        let market = st.markets.get(&market_id).ok_or(Error::MarketNotFound)?;
+        let long_price  = OracleModule::mid(&market.long_token)?;
+        let short_price = OracleModule::mid(&market.short_token)?;
+
         // Immutable snapshots for calculations and checks
         let (pool_long_liq, pool_short_liq, fee_long_total, fee_short_total) = {
             let pool = st.pool_amounts.get(&market_id).ok_or(Error::MarketNotFound)?;
@@ -141,12 +146,9 @@ impl MarketModule {
         let total_long_usd  = long_usd .saturating_add(fee_long_usd);
         let total_short_usd = short_usd.saturating_add(fee_short_usd);
 
-        // Convert USD back to token amounts via current mid
-        let price_key = utils::price_key(&market_id);
-        let mid = OracleModule::mid(&price_key)?;
-        // tokens = USD * USD_SCALE / price
-        let long_out_tokens  = total_long_usd .saturating_mul(USD_SCALE) / mid;
-        let short_out_tokens = total_short_usd.saturating_mul(USD_SCALE) / mid;
+        // Convert USD back to token amounts via current token prices
+        let long_out_tokens  = total_long_usd .saturating_mul(USD_SCALE) / long_price;
+        let short_out_tokens = total_short_usd.saturating_mul(USD_SCALE) / short_price;
 
         if long_out_tokens < min_long_out || short_out_tokens < min_short_out {
             return Err(Error::SlippageExceeded);
