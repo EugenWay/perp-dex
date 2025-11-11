@@ -22,23 +22,19 @@ impl PositionModule {
         let mut st = PerpetualDEXState::get_mut();
         let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
 
-        // Check user has sufficient USD balance
         let bal = st.balances.get(&account).copied().unwrap_or(0);
-        let total_cost = collateral_delta_usd; // trading fee берётся в TradingModule
+        let total_cost = collateral_delta_usd;
         if bal < total_cost { return Err(Error::InsufficientBalance); }
 
         let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
         let now = exec::block_timestamp();
 
-        // Take position by ownership (or create)
         let mut pos = match st.positions.remove(&key) {
             Some(mut p) => {
-                // settle fees on existing position
                 RiskModule::settle_position_fees(&mut p, &market, now)?;
                 p
             }
             None => {
-                // register new key in account_positions
                 st.account_positions.entry(account).or_insert_with(Vec::new).push(key);
                 Position {
                     key,
@@ -59,14 +55,11 @@ impl PositionModule {
             }
         };
 
-       // Weighted average entry
         if pos.size_usd > 0 {
             let old_notional = pos.size_usd;
             let new_notional = size_delta_usd;
             let total_size   = old_notional.saturating_add(new_notional);
-            if total_size == 0 {
-                return Err(Error::MathOverflow);
-            }
+            if total_size == 0 { return Err(Error::MathOverflow); }
             pos.entry_price_usd =
                 old_notional.saturating_mul(pos.entry_price_usd)
                 .saturating_add(new_notional.saturating_mul(execution_price_usd))
@@ -75,7 +68,6 @@ impl PositionModule {
             pos.entry_price_usd = execution_price_usd;
         }
 
-        // OI limits (USD)
         let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
         if is_long {
             let new_oi = pool.long_oi_usd.saturating_add(size_delta_usd);
@@ -85,16 +77,13 @@ impl PositionModule {
             if new_oi > config.max_short_oi { return Err(Error::MaxOpenInterestExceeded); }
         }
 
-        // Deduct user balance (collateral part)
         let bal_entry = st.balances.entry(account).or_insert(0);
         *bal_entry = bal_entry.saturating_sub(collateral_delta_usd);
 
-        // Update position amounts
         pos.size_usd = pos.size_usd.saturating_add(size_delta_usd);
         pos.collateral_usd = pos.collateral_usd.saturating_add(collateral_delta_usd);
         pos.increased_at_block = exec::block_height();
 
-        // Update pool OI and liquidity backing (USD)
         let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
         if is_long {
             pool.long_oi_usd = pool.long_oi_usd.saturating_add(size_delta_usd);
@@ -104,10 +93,8 @@ impl PositionModule {
             pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_add(collateral_delta_usd);
         }
 
-        // Liquidation price cache
         pos.liquidation_price_usd = Self::calculate_liquidation_price(&pos, config.liquidation_threshold_bps);
 
-        // Leverage check
         if pos.collateral_usd > 0 {
             let leverage_bps = pos.size_usd.saturating_mul(10_000) / pos.collateral_usd;
             if leverage_bps > (config.max_leverage as u128).saturating_mul(10_000) {
@@ -115,7 +102,6 @@ impl PositionModule {
             }
         }
 
-        // Put position back
         st.positions.insert(key, pos);
 
         Ok(key)
@@ -135,34 +121,34 @@ impl PositionModule {
 
         let key = PerpetualDEXState::get_position_key(account, &market, &collateral_token, is_long);
 
-        // Take position by ownership
         let mut pos = st.positions.remove(&key).ok_or(Error::PositionNotFound)?;
 
-        // Settle fees before decrease
         let now = exec::block_timestamp();
         RiskModule::settle_position_fees(&mut pos, &market, now)?;
 
         if size_delta_usd > pos.size_usd { return Err(Error::InsufficientPositionSize); }
         if collateral_delta_usd > pos.collateral_usd { return Err(Error::InsufficientCollateral); }
 
-        // PnL in USD (signed)
-        let pnl = Self::calculate_pnl(&pos, execution_price_usd);
+        let total_pnl = Self::calculate_pnl(&pos, execution_price_usd);
+        let pnl_partial = if pos.size_usd == 0 {
+            0
+        } else {
+            // realize PnL proportionally to reduced size
+            (total_pnl.saturating_mul(size_delta_usd as i128)) / (pos.size_usd as i128)
+        };
 
-        // Reduce size/collateral
         pos.size_usd = pos.size_usd.saturating_sub(size_delta_usd);
         pos.collateral_usd = pos.collateral_usd.saturating_sub(collateral_delta_usd);
         pos.decreased_at_block = exec::block_height();
 
-        // Payout to user: withdrawn collateral + PnL
         let mut payout_usd = collateral_delta_usd;
-        if pnl >= 0 {
-            payout_usd = payout_usd.saturating_add(pnl as u128);
+        if pnl_partial >= 0 {
+            payout_usd = payout_usd.saturating_add(pnl_partial as u128);
         } else {
-            let loss = pnl.unsigned_abs();
+            let loss = pnl_partial.unsigned_abs();
             payout_usd = payout_usd.saturating_sub(payout_usd.min(loss));
         }
 
-        // Update pool OI and liquidity (USD)
         let pool = st.pool_amounts.entry(market.clone()).or_insert_with(PoolAmounts::default);
         if is_long {
             pool.long_oi_usd = pool.long_oi_usd.saturating_sub(size_delta_usd);
@@ -172,11 +158,9 @@ impl PositionModule {
             pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(collateral_delta_usd);
         }
 
-        // Return payout into user internal USD balance
         let bal = st.balances.entry(account).or_insert(0);
         *bal = bal.saturating_add(payout_usd);
 
-        // If position not closed — refresh liquidation price and insert back; else cleanup
         if pos.size_usd > 0 {
             pos.liquidation_price_usd = Self::calculate_liquidation_price(&pos, config.liquidation_threshold_bps);
             st.positions.insert(key, pos);
@@ -192,35 +176,31 @@ impl PositionModule {
     }
 
     fn calculate_pnl(pos: &Position, current_price_usd: u128) -> i128 {
-        // tokens = size_usd / entry_price
-        // PnL = (current - entry) * tokens
-        if pos.entry_price_usd == 0 { return 0; }
-        let tokens_usdx = pos.size_usd.saturating_mul(USD_SCALE) / pos.entry_price_usd; // USD * 1e6 / USD = 1e6 "token units"
-        let price_delta = if pos.is_long {
-            current_price_usd as i128 - pos.entry_price_usd as i128
+        if pos.size_usd == 0 || pos.entry_price_usd == 0 { return 0; }
+        if pos.is_long {
+            let price_diff = (current_price_usd as i128) - (pos.entry_price_usd as i128);
+            (pos.size_usd as i128)
+                .saturating_mul(price_diff)
+                / (pos.entry_price_usd as i128)
         } else {
-            pos.entry_price_usd as i128 - current_price_usd as i128
-        };
-        // (price_delta * tokens) / USD_SCALE  -> USD
-        (price_delta.saturating_mul(tokens_usdx as i128)) / (USD_SCALE as i128)
+            let price_diff = (pos.entry_price_usd as i128) - (current_price_usd as i128);
+            (pos.size_usd as i128)
+                .saturating_mul(price_diff)
+                / (pos.entry_price_usd as i128)
+        }
     }
 
     fn calculate_liquidation_price(pos: &Position, liq_bps: u16) -> u128 {
         if pos.size_usd == 0 || pos.entry_price_usd == 0 { return 0; }
         let threshold_usd = (pos.collateral_usd.saturating_mul(liq_bps as u128)) / 10_000;
-
-        // tokens in 1e6 units
-        let tokens_usdx = pos.size_usd.saturating_mul(USD_SCALE) / pos.entry_price_usd;
-        if tokens_usdx == 0 { return 0; }
-
         let loss_allowed = pos.collateral_usd.saturating_sub(threshold_usd);
-        // |delta_price| = loss * USD_SCALE / tokens
-        let delta = loss_allowed.saturating_mul(USD_SCALE) / tokens_usdx;
-
+        let loss_ratio = loss_allowed.saturating_mul(USD_SCALE) / pos.size_usd;
         if pos.is_long {
-            pos.entry_price_usd.saturating_sub(delta)
+            let ratio = USD_SCALE.saturating_sub(loss_ratio);
+            pos.entry_price_usd.saturating_mul(ratio) / USD_SCALE
         } else {
-            pos.entry_price_usd.saturating_add(delta)
+            let ratio = USD_SCALE.saturating_add(loss_ratio);
+            pos.entry_price_usd.saturating_mul(ratio) / USD_SCALE
         }
     }
 
