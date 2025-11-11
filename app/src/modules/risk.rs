@@ -134,7 +134,12 @@ impl RiskModule {
 
     fn borrowing_rate(util_bps: u128, cfg: &MarketConfig) -> Result<u128, Error> {
         let exponent = cfg.borrowing_exponent.max(1);
-        let util_exp = util_bps.saturating_mul(exponent) / 10_000;
+    
+        let mut util_exp = util_bps;
+        for _ in 1..exponent {
+            util_exp = util_exp.saturating_mul(util_bps) / 10_000;
+        }
+    
         let rate = cfg.borrowing_factor.saturating_mul(util_exp) / 10_000;
         Ok(rate.min(10_000)) // cap 100% APR
     }
