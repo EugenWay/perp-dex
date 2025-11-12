@@ -5952,6 +5952,7 @@ dependencies = [
 name = "vara_perp_dex_app"
 version = "0.1.0"
 dependencies = [
+ "once_cell",
  "primitive-types 0.14.0",
  "sails-rs",
  "sp-core 38.1.0",
