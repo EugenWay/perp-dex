@@ -1,7 +1,6 @@
 use sails_rs::prelude::*;
 use crate::{
     types::*,
-    utils,
     errors::Error,
     PerpetualDEXState,
     modules::oracle::OracleModule,
@@ -62,16 +61,14 @@ impl MarketModule {
         Ok(())
     }
 
-    /// Add liquidity (token amounts → converted to USD via oracle)
+    /// Add liquidity (token amounts → converted to USD via oracle, LP tokens are minted and credited)
     pub fn add_liquidity(
-        _lp: ActorId,
+        lp: ActorId,
         market_id: String,
         long_token_amount: u128,
         short_token_amount: u128,
         min_mint: u128,
     ) -> Result<u128, Error> {
-
-        // --- Immutable snapshot phase ---
         let (
             long_price,
             short_price,
@@ -107,9 +104,7 @@ impl MarketModule {
             short_token_amount.saturating_mul(short_price) / USD_SCALE;
 
         // TODO: enforce near-neutral LP deposits (optional future feature)
-        // Example: ensure USD difference < X bps
 
-        // Mint amount calculation
         let mint_amount = if total_supply_snapshot == 0 {
             long_usd.saturating_add(short_usd)
         } else {
@@ -127,7 +122,6 @@ impl MarketModule {
             return Err(Error::SlippageExceeded);
         }
 
-        // --- Mutation phase ---
         let mut st = PerpetualDEXState::get_mut();
 
         let mut pool =
@@ -142,22 +136,26 @@ impl MarketModule {
 
         mt.total_supply = mt.total_supply.saturating_add(mint_amount);
 
+        let entry = mt.balances.iter_mut().find(|(a, _)| *a == lp);
+        if let Some(e) = entry {
+            e.1 = e.1.saturating_add(mint_amount);
+        } else {
+            mt.balances.push((lp, mint_amount));
+        }
+
         st.pool_amounts.insert(market_id.clone(), pool);
         st.market_tokens.insert(market_id, mt);
 
         Ok(mint_amount)
     }
 
-    /// Remove liquidity (return token amounts, based on USD shares)
     pub fn remove_liquidity(
-        _lp: ActorId,
+        lp: ActorId,
         market_id: String,
         market_token_amount: u128,
         min_long_out: u128,
         min_short_out: u128,
     ) -> Result<(u128, u128), Error> {
-
-        // --- Immutable snapshot phase ---
         let (
             long_price,
             short_price,
@@ -196,7 +194,7 @@ impl MarketModule {
         let short_usd = pool_short_liq.saturating_mul(market_token_amount) / total_supply_snapshot;
 
         let fee_long_usd = fee_long_total.saturating_mul(market_token_amount) / total_supply_snapshot;
-        let fee_short_usd = fee_short_total.saturating_mul(market_token_amount)/ total_supply_snapshot;
+        let fee_short_usd = fee_short_total.saturating_mul(market_token_amount) / total_supply_snapshot;
 
         let total_long_usd = long_usd.saturating_add(fee_long_usd);
         let total_short_usd = short_usd.saturating_add(fee_short_usd);
@@ -212,6 +210,19 @@ impl MarketModule {
 
         let mut pool = st.pool_amounts.remove(&market_id).ok_or(Error::MarketNotFound)?;
         let mut mt = st.market_tokens.remove(&market_id).ok_or(Error::MarketNotFound)?;
+
+        // Burn LP balance
+        {
+            let bal = mt
+                .balances
+                .iter_mut()
+                .find(|(a, _)| *a == lp)
+                .ok_or(Error::InsufficientMarketTokens)?;
+            if bal.1 < market_token_amount {
+                return Err(Error::InsufficientMarketTokens);
+            }
+            bal.1 = bal.1.saturating_sub(market_token_amount);
+        }
 
         pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_sub(long_usd);
         pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(short_usd);
