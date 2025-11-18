@@ -10,9 +10,9 @@ pub struct SettledFees {
 pub struct RiskModule;
 
 impl RiskModule {
-    /// Updates pool-level funding accumulators only
+    /// Updates pool-level funding accumulators only.
     ///
-    /// Borrowing fees are calculated and collected per-position in settle_position_fees
+    /// Borrowing fees are calculated and collected per-position in settle_position_fees.
     pub fn accrue_pool(market: &str, current_time: u64) -> Result<(), Error> {
         let mut st = PerpetualDEXState::get_mut();
         let cfg = st.market_configs.get(market).ok_or(Error::MarketNotFound)?.clone();
@@ -83,16 +83,16 @@ impl RiskModule {
             if pos.is_long {
                 if pool.claimable_fee_usd_long < credit {
                     // Insufficient funding pool - should not happen in normal operation
-                    // In bootstrap/extreme scenarios, we simply limit credit to available
+                    // In extreme cases, we cap credit at available amount
                     let available = pool.claimable_fee_usd_long;
                     pool.claimable_fee_usd_long = 0;
                     pos.collateral_usd = pos.collateral_usd.saturating_add(available);
 
-                    // Update fees to reflect what was actually paid
+                    // Update fees to reflect what was actually paid.
                     fees.funding_fee = -(available as i128);
                     fees.total_fee_usd = fees.funding_fee.saturating_add(fees.borrowing_fee as i128);
 
-                    // Note: remaining funding credit is lost (acceptable in edge cases)
+                    // Remaining funding credit is lost (acceptable in edge cases).
                     return Ok(fees);
                 }
                 pool.claimable_fee_usd_long = pool.claimable_fee_usd_long.saturating_sub(credit);
@@ -116,8 +116,8 @@ impl RiskModule {
         if dt > 0 && pos.size_usd > 0 {
             fees.borrowing_fee = Self::position_borrowing_fee(pos, pool, &cfg, dt)?;
 
-            // Add borrowing fee to LP claimable for this side
-            // This is the ONLY place where borrowing fees are calculated and added
+            // Add borrowing fee to LP claimable for this side.
+            // This is the ONLY place where borrowing fees are calculated and added.
             if pos.is_long {
                 pool.claimable_fee_usd_long = pool.claimable_fee_usd_long.saturating_add(fees.borrowing_fee);
             } else {
@@ -197,11 +197,8 @@ impl RiskModule {
     }
 
     fn position_borrowing_fee(pos: &Position, pool: &PoolAmounts, cfg: &MarketConfig, dt: u64) -> Result<u128, Error> {
-        let liquidity = if pos.is_long {
-            pool.long_liquidity_usd
-        } else {
-            pool.short_liquidity_usd
-        };
+        // Use total pool liquidity as the base for utilization
+        let liquidity = pool.liquidity_usd;
         if liquidity == 0 {
             return Ok(0);
         }

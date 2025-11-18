@@ -18,15 +18,11 @@ impl PositionModule {
         let now = exec::block_timestamp();
         let current_block = exec::block_height();
 
-        // --- Read-only snapshot phase ---
         let (config, balance, existing_pos_opt) = {
             let st = PerpetualDEXState::get();
 
             let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
-
             let balance = st.balances.get(&account).copied().unwrap_or(0);
-
-            // clone existing position (do not remove from state yet)
             let existing = st.positions.get(&key).cloned();
 
             (config, balance, existing)
@@ -37,12 +33,10 @@ impl PositionModule {
             return Err(Error::InsufficientBalance);
         }
 
-        // Build/adjust position off-state, including fee settlement
         let mut pos;
         let is_new_position;
 
         if let Some(mut existing) = existing_pos_opt {
-            // settle funding/borrowing fees using RiskModule (it will touch state internally)
             RiskModule::settle_position_fees(&mut existing, &market, now)?;
             pos = existing;
             is_new_position = false;
@@ -82,41 +76,46 @@ impl PositionModule {
             pos.entry_price_usd = execution_price_usd;
         }
 
-        // Apply position deltas
         pos.size_usd = pos.size_usd.saturating_add(size_delta_usd);
         pos.collateral_usd = pos.collateral_usd.saturating_add(collateral_delta_usd);
         pos.increased_at_block = current_block;
 
-        // Liquidation price and leverage check are done after pool/balance checks
-        // but use the same config snapshot.
-
-        // --- Mutation phase (single mutable borrow) ---
         let mut st = PerpetualDEXState::get_mut();
 
-        // Re-check market exists (paranoia) and fetch pool
         let pool = st
             .pool_amounts
             .entry(market.clone())
             .or_insert_with(PoolAmounts::default);
 
-        // Open interest limit checks + updates
+        let total_liquidity = pool.liquidity_usd;
+        let max_allowed_oi_from_liquidity = total_liquidity.saturating_mul(config.reserve_factor_bps as u128) / 10_000;
+
         if is_long {
             let new_oi = pool.long_oi_usd.saturating_add(size_delta_usd);
+
             if new_oi > config.max_long_oi {
                 return Err(Error::MaxOpenInterestExceeded);
             }
+
+            if new_oi > max_allowed_oi_from_liquidity {
+                return Err(Error::InsufficientLiquidity);
+            }
+
             pool.long_oi_usd = new_oi;
-            pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_add(collateral_delta_usd);
         } else {
             let new_oi = pool.short_oi_usd.saturating_add(size_delta_usd);
+
             if new_oi > config.max_short_oi {
                 return Err(Error::MaxOpenInterestExceeded);
             }
+
+            if new_oi > max_allowed_oi_from_liquidity {
+                return Err(Error::InsufficientLiquidity);
+            }
+
             pool.short_oi_usd = new_oi;
-            pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_add(collateral_delta_usd);
         }
 
-        // Charge collateral from internal USD wallet
         {
             let bal_entry = st.balances.entry(account).or_insert(0);
             if *bal_entry < total_cost {
@@ -125,11 +124,9 @@ impl PositionModule {
             *bal_entry = bal_entry.saturating_sub(total_cost);
         }
 
-        // Recompute liquidation price with latest position state
         if pos.collateral_usd > 0 && pos.size_usd > 0 {
             pos.liquidation_price_usd = Self::calculate_liquidation_price(&pos, config.liquidation_threshold_bps);
 
-            // Leverage check: size / collateral ≤ max_leverage
             let leverage_bps = pos.size_usd.saturating_mul(10_000) / pos.collateral_usd;
             if leverage_bps > (config.max_leverage as u128).saturating_mul(10_000) {
                 return Err(Error::MaxLeverageExceeded);
@@ -158,18 +155,15 @@ impl PositionModule {
         let now = exec::block_timestamp();
         let current_block = exec::block_height();
 
-        // --- Read-only snapshot phase ---
         let (config, mut pos) = {
             let st = PerpetualDEXState::get();
 
             let config = st.market_configs.get(&market).ok_or(Error::MarketNotFound)?.clone();
-
             let pos = st.positions.get(&key).cloned().ok_or(Error::PositionNotFound)?;
 
             (config, pos)
         };
 
-        // Settle fees on local copy
         RiskModule::settle_position_fees(&mut pos, &market, now)?;
 
         if size_delta_usd > pos.size_usd {
@@ -198,10 +192,8 @@ impl PositionModule {
             payout_usd = payout_usd.saturating_sub(payout_usd.min(loss));
         }
 
-        // --- Mutation phase ---
         let mut st = PerpetualDEXState::get_mut();
 
-        // Update pool OI and liquidity
         let pool = st
             .pool_amounts
             .entry(market.clone())
@@ -209,13 +201,18 @@ impl PositionModule {
 
         if is_long {
             pool.long_oi_usd = pool.long_oi_usd.saturating_sub(size_delta_usd);
-            pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_sub(collateral_delta_usd);
         } else {
             pool.short_oi_usd = pool.short_oi_usd.saturating_sub(size_delta_usd);
-            pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(collateral_delta_usd);
         }
 
-        // Credit payout to user's internal USD balance
+        if pnl_partial > 0 {
+            let pnl_usd = pnl_partial as u128;
+            pool.liquidity_usd = pool.liquidity_usd.saturating_sub(pnl_usd);
+        } else if pnl_partial < 0 {
+            let loss_usd = pnl_partial.unsigned_abs();
+            pool.liquidity_usd = pool.liquidity_usd.saturating_add(loss_usd);
+        }
+
         {
             let bal = st.balances.entry(account).or_insert(0);
             *bal = bal.saturating_add(payout_usd);

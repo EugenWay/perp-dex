@@ -1,15 +1,10 @@
+use crate::{PerpetualDEXState, errors::Error, modules::oracle::OracleModule, types::*};
 use sails_rs::prelude::*;
-use crate::{
-    types::*,
-    errors::Error,
-    PerpetualDEXState,
-    modules::oracle::OracleModule,
-};
 
 pub struct MarketModule;
 
 impl MarketModule {
-    /// Create a new market (admin only)
+    /// Create a new market (admin only).
     pub fn create_market(
         caller: ActorId,
         market_id: String,
@@ -42,12 +37,8 @@ impl MarketModule {
         Ok(())
     }
 
-    /// Update market configuration (admin only)
-    pub fn set_market_config(
-        caller: ActorId,
-        market_id: String,
-        config: MarketConfig,
-    ) -> Result<(), Error> {
+    /// Update market configuration (admin only).
+    pub fn set_market_config(caller: ActorId, market_id: String, config: MarketConfig) -> Result<(), Error> {
         let mut st = PerpetualDEXState::get_mut();
 
         if !st.is_admin(caller) {
@@ -61,7 +52,8 @@ impl MarketModule {
         Ok(())
     }
 
-    /// Add liquidity (token amounts → converted to USD via oracle, LP tokens are minted and credited)
+    /// Add liquidity (LP deposits tokens → converted to USD, LP tokens minted).
+    /// Funds from LPs go ONLY into `liquidity_usd`.
     pub fn add_liquidity(
         lp: ActorId,
         market_id: String,
@@ -69,13 +61,7 @@ impl MarketModule {
         short_token_amount: u128,
         min_mint: u128,
     ) -> Result<u128, Error> {
-        let (
-            long_price,
-            short_price,
-            pool_long_liq,
-            pool_short_liq,
-            total_supply_snapshot,
-        ) = {
+        let (long_price, short_price, pool_liq_snapshot, total_supply_snapshot) = {
             let st = PerpetualDEXState::get();
 
             if !st.markets.contains_key(&market_id) {
@@ -88,34 +74,30 @@ impl MarketModule {
             let short_price = OracleModule::mid(&market.short_token)?;
 
             let pool = st.pool_amounts.get(&market_id).unwrap();
-            let pl = pool.long_liquidity_usd;
-            let ps = pool.short_liquidity_usd;
+            let pl = pool.liquidity_usd;
 
             let mt = st.market_tokens.get(&market_id).unwrap();
             let ts = mt.total_supply;
 
-            (long_price, short_price, pl, ps, ts)
+            (long_price, short_price, pl, ts)
         };
 
-        // Convert to USD
-        let long_usd =
-            long_token_amount.saturating_mul(long_price) / USD_SCALE;
-        let short_usd =
-            short_token_amount.saturating_mul(short_price) / USD_SCALE;
+        // Convert deposits to USD
+        let long_usd = long_token_amount.saturating_mul(long_price) / USD_SCALE;
+        let short_usd = short_token_amount.saturating_mul(short_price) / USD_SCALE;
 
-        // TODO: enforce near-neutral LP deposits (optional future feature)
+        let added_value = long_usd.saturating_add(short_usd);
 
         let mint_amount = if total_supply_snapshot == 0 {
-            long_usd.saturating_add(short_usd)
+            // First deposit → LP supply = pool USD value
+            added_value
         } else {
-            let total_pool_value = pool_long_liq.saturating_add(pool_short_liq);
+            // Pro-rata share based on current pool value
+            let total_pool_value = pool_liq_snapshot;
             if total_pool_value == 0 {
                 return Err(Error::InsufficientLiquidity);
             }
-            let added_value = long_usd.saturating_add(short_usd);
-            total_supply_snapshot
-                .saturating_mul(added_value)
-                / total_pool_value
+            total_supply_snapshot.saturating_mul(added_value) / total_pool_value
         };
 
         if mint_amount < min_mint {
@@ -124,16 +106,13 @@ impl MarketModule {
 
         let mut st = PerpetualDEXState::get_mut();
 
-        let mut pool =
-            st.pool_amounts.remove(&market_id).ok_or(Error::MarketNotFound)?;
-        let mut mt =
-            st.market_tokens.remove(&market_id).ok_or(Error::MarketNotFound)?;
+        let mut pool = st.pool_amounts.remove(&market_id).ok_or(Error::MarketNotFound)?;
+        let mut mt = st.market_tokens.remove(&market_id).ok_or(Error::MarketNotFound)?;
 
-        pool.long_liquidity_usd =
-            pool.long_liquidity_usd.saturating_add(long_usd);
-        pool.short_liquidity_usd =
-            pool.short_liquidity_usd.saturating_add(short_usd);
+        // LP funds go into shared liquidity
+        pool.liquidity_usd = pool.liquidity_usd.saturating_add(long_usd).saturating_add(short_usd);
 
+        // Mint LP tokens
         mt.total_supply = mt.total_supply.saturating_add(mint_amount);
 
         let entry = mt.balances.iter_mut().find(|(a, _)| *a == lp);
@@ -149,6 +128,8 @@ impl MarketModule {
         Ok(mint_amount)
     }
 
+    /// Remove liquidity (LP burns tokens → receives tokens back).
+    /// Funds are taken ONLY from `liquidity_usd` (plus pro-rata share of fees).
     pub fn remove_liquidity(
         lp: ActorId,
         market_id: String,
@@ -156,15 +137,7 @@ impl MarketModule {
         min_long_out: u128,
         min_short_out: u128,
     ) -> Result<(u128, u128), Error> {
-        let (
-            long_price,
-            short_price,
-            pool_long_liq,
-            pool_short_liq,
-            fee_long_total,
-            fee_short_total,
-            total_supply_snapshot,
-        ) = {
+        let (long_price, short_price, pool_liq, fee_long_total, fee_short_total, total_supply_snapshot) = {
             let st = PerpetualDEXState::get();
 
             if !st.markets.contains_key(&market_id) {
@@ -177,8 +150,7 @@ impl MarketModule {
             let short_price = OracleModule::mid(&market.short_token)?;
 
             let pool = st.pool_amounts.get(&market_id).unwrap();
-            let pl = pool.long_liquidity_usd;
-            let ps = pool.short_liquidity_usd;
+            let pl = pool.liquidity_usd;
             let fl = pool.claimable_fee_usd_long;
             let fs = pool.claimable_fee_usd_short;
 
@@ -187,18 +159,29 @@ impl MarketModule {
                 return Err(Error::InsufficientLiquidity);
             }
 
-            (long_price, short_price, pl, ps, fl, fs, mt.total_supply)
+            (long_price, short_price, pl, fl, fs, mt.total_supply)
         };
 
-        let long_usd = pool_long_liq.saturating_mul(market_token_amount) / total_supply_snapshot;
-        let short_usd = pool_short_liq.saturating_mul(market_token_amount) / total_supply_snapshot;
+        // Pro-rata share of pool liquidity
+        let liq_usd = pool_liq.saturating_mul(market_token_amount) / total_supply_snapshot;
 
+        // Split base liquidity between long/short tokens by current prices
+        let price_sum = long_price.saturating_add(short_price);
+        if price_sum == 0 {
+            return Err(Error::InvalidPrice);
+        }
+
+        let long_usd_base = liq_usd.saturating_mul(long_price) / price_sum;
+        let short_usd_base = liq_usd.saturating_sub(long_usd_base);
+
+        // Pro-rata share of accumulated fees
         let fee_long_usd = fee_long_total.saturating_mul(market_token_amount) / total_supply_snapshot;
         let fee_short_usd = fee_short_total.saturating_mul(market_token_amount) / total_supply_snapshot;
 
-        let total_long_usd = long_usd.saturating_add(fee_long_usd);
-        let total_short_usd = short_usd.saturating_add(fee_short_usd);
+        let total_long_usd = long_usd_base.saturating_add(fee_long_usd);
+        let total_short_usd = short_usd_base.saturating_add(fee_short_usd);
 
+        // Convert USD back to tokens
         let long_out_tokens = total_long_usd.saturating_mul(USD_SCALE) / long_price;
         let short_out_tokens = total_short_usd.saturating_mul(USD_SCALE) / short_price;
 
@@ -224,8 +207,8 @@ impl MarketModule {
             bal.1 = bal.1.saturating_sub(market_token_amount);
         }
 
-        pool.long_liquidity_usd = pool.long_liquidity_usd.saturating_sub(long_usd);
-        pool.short_liquidity_usd = pool.short_liquidity_usd.saturating_sub(short_usd);
+        // Decrease shared liquidity and fee buckets
+        pool.liquidity_usd = pool.liquidity_usd.saturating_sub(liq_usd);
 
         pool.claimable_fee_usd_long = pool.claimable_fee_usd_long.saturating_sub(fee_long_usd);
         pool.claimable_fee_usd_short = pool.claimable_fee_usd_short.saturating_sub(fee_short_usd);
@@ -238,12 +221,9 @@ impl MarketModule {
         Ok((long_out_tokens, short_out_tokens))
     }
 
-    /// Get pool amounts (USD)
+    /// Get pool amounts (USD).
     pub fn get_pool(market_id: &str) -> Result<PoolAmounts, Error> {
         let st = PerpetualDEXState::get();
-        st.pool_amounts
-            .get(market_id)
-            .cloned()
-            .ok_or(Error::MarketNotFound)
+        st.pool_amounts.get(market_id).cloned().ok_or(Error::MarketNotFound)
     }
 }

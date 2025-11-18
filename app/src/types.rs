@@ -1,7 +1,4 @@
-use sails_rs::{
-    prelude::*,
-    collections::BTreeMap,
-};
+use sails_rs::{collections::BTreeMap, prelude::*};
 
 pub type RequestKey = H256;
 pub type PositionKey = H256;
@@ -29,9 +26,9 @@ pub struct MarketConfig {
     pub market_id: String,
 
     // Price impact
-    pub pi_factor_positive: u128,        // bps
-    pub pi_factor_negative: u128,        // bps
-    pub pi_exponent: u128,               // dimensionless
+    pub pi_factor_positive: u128, // bps
+    pub pi_factor_negative: u128, // bps
+    pub pi_exponent: u128,        // dimensionless
 
     // Funding
     pub funding_factor: u128,            // bps
@@ -40,14 +37,14 @@ pub struct MarketConfig {
     pub optimal_imbalance_ratio: u128,   // bps
 
     // Borrowing
-    pub borrowing_factor: u128,          // bps
-    pub borrowing_exponent: u128,        // dimensionless
+    pub borrowing_factor: u128,   // bps
+    pub borrowing_exponent: u128, // dimensionless
     pub skip_borrowing_for_smaller_side: bool,
 
     // Trading & risk
     pub trading_fee_bps: u16,
-    pub max_leverage: u8,                // x
-    pub min_collateral_usd: Usd,         // fixed-point
+    pub max_leverage: u8,        // x
+    pub min_collateral_usd: Usd, // fixed-point
     pub liquidation_threshold_bps: u16,
     pub reserve_factor_bps: u16,
 
@@ -61,20 +58,15 @@ pub struct MarketConfig {
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
 pub struct PoolAmounts {
-    pub long_liquidity_usd: Usd,
-    pub short_liquidity_usd: Usd,
-    pub long_oi_usd: Usd,
-    pub short_oi_usd: Usd,
-
-    pub position_impact_pool_usd: Usd,
-    pub swap_impact_pool_usd: Usd,
-
+    pub liquidity_usd: Usd,
     pub claimable_fee_usd_long: Usd,
     pub claimable_fee_usd_short: Usd,
+    pub long_oi_usd: Usd,
+    pub short_oi_usd: Usd,
+    pub position_impact_pool_usd: Usd,
+    pub swap_impact_pool_usd: Usd,
     pub total_borrowing_fees_usd: Usd,
-
     pub last_funding_update: u64,
-    /// Accumulated funding per 1 USD of size (signed micro-USD / USD)
     pub accumulated_funding_long_per_usd: i128,
     pub accumulated_funding_short_per_usd: i128,
 }
@@ -241,8 +233,13 @@ pub struct UpdateOrderParams {
 #[codec(crate = sails_rs::scale_codec)]
 #[scale_info(crate = sails_rs::scale_info)]
 pub enum ExecutionResult {
-    Executed { position_key: PositionKey, execution_price: u128 },
-    Saved { order_key: RequestKey },
+    Executed {
+        position_key: PositionKey,
+        execution_price: u128,
+    },
+    Saved {
+        order_key: RequestKey,
+    },
 }
 
 /// USD price, scaled by USD_SCALE (micro-USD per 1 index unit)

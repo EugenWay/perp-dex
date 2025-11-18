@@ -168,7 +168,6 @@ impl TradingModule {
             }
 
             if let Some(om) = st.orders.get_mut(&key) {
-                // Extra safety: ensure still Created
                 if om.status != OrderStatus::Created {
                     return Err(Error::OrderAlreadyProcessed);
                 }
