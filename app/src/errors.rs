@@ -59,6 +59,7 @@ pub enum Error {
     InvalidOracleSignature,
 
     // Other
+    InsufficientOpenInterest,
     InvalidParameter,
     MathOverflow,
 }
