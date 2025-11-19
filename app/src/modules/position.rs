@@ -237,18 +237,30 @@ impl PositionModule {
         if pos.size_usd == 0 || pos.entry_price_usd == 0 {
             return 0;
         }
-        
+
         if pos.is_long {
             let price_diff = (current_price_usd as i128) - (pos.entry_price_usd as i128);
             match (pos.size_usd as i128).checked_mul(price_diff) {
                 Some(numerator) => numerator / (pos.entry_price_usd as i128),
-                None => if price_diff > 0 { i128::MAX } else { i128::MIN }
+                None => {
+                    if price_diff > 0 {
+                        i128::MAX
+                    } else {
+                        i128::MIN
+                    }
+                }
             }
         } else {
             let price_diff = (pos.entry_price_usd as i128) - (current_price_usd as i128);
             match (pos.size_usd as i128).checked_mul(price_diff) {
                 Some(numerator) => numerator / (pos.entry_price_usd as i128),
-                None => if price_diff > 0 { i128::MAX } else { i128::MIN }
+                None => {
+                    if price_diff > 0 {
+                        i128::MAX
+                    } else {
+                        i128::MIN
+                    }
+                }
             }
         }
     }
