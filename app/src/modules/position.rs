@@ -280,4 +280,93 @@ impl PositionModule {
         let pos = Self::get_position(key)?;
         Ok(Self::calculate_pnl(&pos, current_price))
     }
+
+    /// Liquidate a position with liquidator reward
+    /// Returns (position_key, liquidation_fee_paid_to_liquidator)
+    pub fn liquidate_position(
+        liquidator: ActorId,
+        position_key: PositionKey,
+        execution_price_usd: u128,
+        liquidation_fee_bps: u16,
+    ) -> Result<(PositionKey, u128), Error> {
+        let now = exec::block_timestamp();
+
+        let (mut pos, market, owner) = {
+            let st = PerpetualDEXState::get();
+            let pos = st.positions.get(&position_key).cloned().ok_or(Error::PositionNotFound)?;
+            let market = pos.market.clone();
+            let owner = pos.account;
+            (pos, market, owner)
+        };
+
+        // Settle fees first
+        RiskModule::settle_position_fees(&mut pos, &market, now)?;
+
+        // Calculate PnL
+        let total_pnl = Self::calculate_pnl(&pos, execution_price_usd);
+
+        // Calculate liquidation fee (from remaining collateral)
+        let liquidation_fee = pos.collateral_usd.saturating_mul(liquidation_fee_bps as u128) / 10_000;
+
+        // Remaining collateral after liquidation fee
+        let remaining_collateral = pos.collateral_usd.saturating_sub(liquidation_fee);
+
+        // Calculate payout to position owner (collateral - fee + pnl)
+        let mut payout_to_owner = remaining_collateral;
+        if total_pnl >= 0 {
+            payout_to_owner = payout_to_owner.saturating_add(total_pnl as u128);
+        } else {
+            let loss = total_pnl.unsigned_abs();
+            payout_to_owner = payout_to_owner.saturating_sub(payout_to_owner.min(loss));
+        }
+
+        // Save position data before mutating state
+        let size_usd = pos.size_usd;
+        let is_long = pos.is_long;
+
+        let mut st = PerpetualDEXState::get_mut();
+
+        let pool = st
+            .pool_amounts
+            .entry(market.clone())
+            .or_insert_with(PoolAmounts::default);
+
+        // Update pool OI
+        if is_long {
+            pool.long_oi_usd = pool.long_oi_usd.saturating_sub(size_usd);
+        } else {
+            pool.short_oi_usd = pool.short_oi_usd.saturating_sub(size_usd);
+        }
+
+        // Update pool liquidity based on PnL
+        if total_pnl > 0 {
+            let pnl_usd = total_pnl as u128;
+            pool.liquidity_usd = pool.liquidity_usd.saturating_sub(pnl_usd);
+        } else if total_pnl < 0 {
+            let loss_usd = total_pnl.unsigned_abs();
+            pool.liquidity_usd = pool.liquidity_usd.saturating_add(loss_usd);
+        }
+
+        // Pay liquidation fee to liquidator
+        {
+            let liquidator_bal = st.balances.entry(liquidator).or_insert(0);
+            *liquidator_bal = liquidator_bal.saturating_add(liquidation_fee);
+        }
+
+        // Pay remaining to position owner
+        {
+            let owner_bal = st.balances.entry(owner).or_insert(0);
+            *owner_bal = owner_bal.saturating_add(payout_to_owner);
+        }
+
+        // Remove position
+        st.positions.remove(&position_key);
+        if let Some(vec) = st.account_positions.get_mut(&owner) {
+            if let Some(i) = vec.iter().position(|k| *k == position_key) {
+                vec.swap_remove(i);
+            }
+        }
+
+        Ok((position_key, liquidation_fee))
+    }
 }

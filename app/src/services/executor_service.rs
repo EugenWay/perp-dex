@@ -1,11 +1,11 @@
-use sails_rs::{prelude::*, gstd::msg};
 use crate::{
+    PerpetualDEXState,
     errors::Error,
+    modules::{oracle::OracleModule, position::PositionModule, risk::RiskModule, trading::TradingModule},
     types::*,
     utils,
-    modules::{trading::TradingModule, position::PositionModule, risk::RiskModule, oracle::OracleModule},
-    PerpetualDEXState,
 };
+use sails_rs::{gstd::msg, prelude::*};
 
 pub struct ExecutorService;
 
@@ -32,13 +32,10 @@ impl ExecutorService {
 
     /// Liquidate an underwater position (callable by keepers/liquidators)
     #[export]
-    pub fn liquidate_position(
-        &mut self,
-        position_key: PositionKey,
-    ) -> Result<(), Error> {
+    pub fn liquidate_position(&mut self, position_key: PositionKey) -> Result<(), Error> {
         let liquidator = msg::source();
         let current_time = sails_rs::gstd::exec::block_timestamp();
-        
+
         // Check liquidator permissions
         {
             let st = PerpetualDEXState::get();
@@ -58,8 +55,16 @@ impl ExecutorService {
         // Check if liquidatable WITH pending fees
         let (config, pool) = {
             let st = PerpetualDEXState::get();
-            let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?.clone();
-            let pool = st.pool_amounts.get(&position.market).ok_or(Error::MarketNotFound)?.clone();
+            let config = st
+                .market_configs
+                .get(&position.market)
+                .ok_or(Error::MarketNotFound)?
+                .clone();
+            let pool = st
+                .pool_amounts
+                .get(&position.market)
+                .ok_or(Error::MarketNotFound)?
+                .clone();
             (config, pool)
         };
 
@@ -67,16 +72,17 @@ impl ExecutorService {
             return Err(Error::PositionNotLiquidatable);
         }
 
-        // Execute liquidation by closing entire position
-        PositionModule::decrease_position(
-            position.account,
-            position.market.clone(),
-            position.collateral_token.clone(),
-            position.is_long,
-            position.size_usd,
-            position.collateral_usd,
-            current_price,
-        )?;
+        // Execute liquidation with liquidator reward
+        let (_, liquidation_fee) =
+            PositionModule::liquidate_position(liquidator, position_key, current_price, config.liquidation_fee_bps)?;
+
+        // Emit liquidation event
+        sails_rs::gstd::msg::send_bytes(
+            liquidator,
+            format!("Position liquidated. Fee: {}", liquidation_fee).as_bytes(),
+            0,
+        )
+        .ok();
 
         Ok(())
     }
@@ -85,7 +91,7 @@ impl ExecutorService {
     #[export]
     pub fn can_liquidate(&self, position_key: PositionKey) -> Result<bool, Error> {
         let current_time = sails_rs::gstd::exec::block_timestamp();
-        
+
         let position = PositionModule::get_position(&position_key)?;
         let price_key = utils::price_key(&position.market);
         let current_price = OracleModule::mid(&price_key)?;
@@ -94,7 +100,7 @@ impl ExecutorService {
         let st = PerpetualDEXState::get();
         let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?;
         let pool = st.pool_amounts.get(&position.market).ok_or(Error::MarketNotFound)?;
-        
+
         RiskModule::is_liquidatable(&position, pool, config, current_price, current_time)
     }
 
@@ -111,13 +117,9 @@ impl ExecutorService {
                 if let Some(config) = st.market_configs.get(&position.market) {
                     if let Some(pool) = st.pool_amounts.get(&position.market) {
                         // Check with pending fees included
-                        if let Ok(is_liq) = RiskModule::is_liquidatable(
-                            position,
-                            pool,
-                            config,
-                            current_price,
-                            current_time,
-                        ) {
+                        if let Ok(is_liq) =
+                            RiskModule::is_liquidatable(position, pool, config, current_price, current_time)
+                        {
                             if is_liq {
                                 liquidatable.push(*position_key);
                             }
@@ -141,13 +143,25 @@ impl ExecutorService {
             if let Ok(mid) = OracleModule::mid(&price_key) {
                 let can_execute = match order.order_type {
                     OrderType::LimitIncrease => {
-                        if order.is_long { mid <= order.trigger_price } else { mid >= order.trigger_price }
+                        if order.is_long {
+                            mid <= order.trigger_price
+                        } else {
+                            mid >= order.trigger_price
+                        }
                     }
                     OrderType::LimitDecrease => {
-                        if order.is_long { mid >= order.trigger_price } else { mid <= order.trigger_price }
+                        if order.is_long {
+                            mid >= order.trigger_price
+                        } else {
+                            mid <= order.trigger_price
+                        }
                     }
                     OrderType::StopLossDecrease => {
-                        if order.is_long { mid <= order.trigger_price } else { mid >= order.trigger_price }
+                        if order.is_long {
+                            mid <= order.trigger_price
+                        } else {
+                            mid >= order.trigger_price
+                        }
                     }
                     _ => false,
                 };

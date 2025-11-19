@@ -24,7 +24,7 @@ pub enum ExecutorEvent {
     OrderFrozen { key: RequestKey, reason: String },
     PositionIncreased { position_key: PositionKey, account: ActorId, market: String, size_delta: u128, collateral_delta: u128, execution_price: u128, price_impact: i128 },
     PositionDecreased { position_key: PositionKey, account: ActorId, market: String, size_delta: u128, collateral_delta: u128, execution_price: u128, price_impact: i128, pnl: i128 },
-    PositionLiquidated { position_key: PositionKey, account: ActorId, market: String, liquidator: ActorId },
+    PositionLiquidated { position_key: PositionKey, account: ActorId, market: String, liquidator: ActorId, liquidation_fee: u128 },
 }
 
 #[derive(Encode, Decode, TypeInfo, Clone, Debug)]

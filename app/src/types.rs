@@ -46,6 +46,7 @@ pub struct MarketConfig {
     pub max_leverage: u8,        // x
     pub min_collateral_usd: Usd, // fixed-point
     pub liquidation_threshold_bps: u16,
+    pub liquidation_fee_bps: u16, // Liquidator reward (e.g. 500 = 5%)
     pub reserve_factor_bps: u16,
 
     // OI caps (in USD)
