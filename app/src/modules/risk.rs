@@ -228,19 +228,57 @@ impl RiskModule {
             .saturating_div(seconds_per_year * 10_000))
     }
 
-    /// NOTE: This check does NOT include unsettled funding/borrowing fees.
-    /// Liquidators MUST apply virtual settlement before calling this.
-    /// Recommended: use effective_collateral_after_virtual_settle().
-    pub fn is_liquidatable(pos: &Position, current_price_usd: u128, liq_bps: u16) -> bool {
+    /// Calculate pending fees for a position WITHOUT modifying it (virtual calculation).
+    /// Returns (funding_fee, borrowing_fee, total_fee) - all in signed i128 for consistency.
+    pub fn calculate_pending_fees_virtual(
+        pos: &Position,
+        pool: &PoolAmounts,
+        cfg: &MarketConfig,
+        current_time: u64,
+    ) -> Result<(i128, u128, i128), Error> {
+        // 1. Calculate funding fee (zero-sum)
+        let current_funding = if pos.is_long {
+            pool.accumulated_funding_long_per_usd
+        } else {
+            pool.accumulated_funding_short_per_usd
+        };
+
+        let funding_delta_micro = current_funding - pos.funding_fee_per_usd;
+        let funding_fee = (pos.size_usd as i128).saturating_mul(funding_delta_micro) / (USD_SCALE as i128);
+
+        // 2. Calculate borrowing fee (trader → LP)
+        let borrowing_fee = {
+            let dt = current_time.saturating_sub(pos.last_fee_update);
+            if dt > 0 && pos.size_usd > 0 {
+                Self::position_borrowing_fee(pos, pool, cfg, dt)?
+            } else {
+                0
+            }
+        };
+
+        let total_fee = funding_fee.saturating_add(borrowing_fee as i128);
+        Ok((funding_fee, borrowing_fee, total_fee))
+    }
+
+    /// Check if position is liquidatable AFTER applying pending fees.
+    /// This is the correct way to check liquidation status.
+    pub fn is_liquidatable(
+        pos: &Position,
+        pool: &PoolAmounts,
+        cfg: &MarketConfig,
+        current_price_usd: u128,
+        current_time: u64,
+    ) -> Result<bool, Error> {
         if pos.size_usd == 0 || pos.entry_price_usd == 0 {
-            return false;
+            return Ok(false);
         }
 
         let tokens_usdx = pos.size_usd.saturating_mul(USD_SCALE) / pos.entry_price_usd;
         if tokens_usdx == 0 {
-            return false;
+            return Ok(false);
         }
 
+        // Calculate PnL
         let price_delta = if pos.is_long {
             current_price_usd as i128 - pos.entry_price_usd as i128
         } else {
@@ -248,9 +286,17 @@ impl RiskModule {
         };
         let pnl = (price_delta.saturating_mul(tokens_usdx as i128)) / (USD_SCALE as i128);
 
-        let current_value = (pos.collateral_usd as i128).saturating_add(pnl);
-        let threshold = (pos.collateral_usd as i128).saturating_mul(liq_bps as i128) / 10_000;
+        // Calculate pending fees (CRITICAL: must include fees!)
+        let (_, _, total_fee) = Self::calculate_pending_fees_virtual(pos, pool, cfg, current_time)?;
 
-        current_value <= threshold
+        // Effective collateral = initial collateral + PnL - fees
+        let effective_collateral = (pos.collateral_usd as i128)
+            .saturating_add(pnl)
+            .saturating_sub(total_fee);
+
+        // Liquidation threshold based on ORIGINAL collateral
+        let threshold = (pos.collateral_usd as i128).saturating_mul(cfg.liquidation_threshold_bps as i128) / 10_000;
+
+        Ok(effective_collateral <= threshold)
     }
 }

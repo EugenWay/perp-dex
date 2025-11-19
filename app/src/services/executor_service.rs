@@ -37,20 +37,37 @@ impl ExecutorService {
         position_key: PositionKey,
     ) -> Result<(), Error> {
         let liquidator = msg::source();
-        let st = PerpetualDEXState::get();
-        if !st.is_keeper(liquidator) && !st.is_liquidator(liquidator) {
-            return Err(Error::NotLiquidator);
+        let current_time = sails_rs::gstd::exec::block_timestamp();
+        
+        // Check liquidator permissions
+        {
+            let st = PerpetualDEXState::get();
+            if !st.is_keeper(liquidator) && !st.is_liquidator(liquidator) {
+                return Err(Error::NotLiquidator);
+            }
         }
 
+        // Get position and market data
         let position = PositionModule::get_position(&position_key)?;
         let price_key = utils::price_key(&position.market);
         let current_price = OracleModule::mid(&price_key)?;
 
-        let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?;
-        if !RiskModule::is_liquidatable(&position, current_price, config.liquidation_threshold_bps) {
+        // CRITICAL: Accrue pool fees before checking liquidation
+        RiskModule::accrue_pool(&position.market, current_time)?;
+
+        // Check if liquidatable WITH pending fees
+        let (config, pool) = {
+            let st = PerpetualDEXState::get();
+            let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?.clone();
+            let pool = st.pool_amounts.get(&position.market).ok_or(Error::MarketNotFound)?.clone();
+            (config, pool)
+        };
+
+        if !RiskModule::is_liquidatable(&position, &pool, &config, current_price, current_time)? {
             return Err(Error::PositionNotLiquidatable);
         }
 
+        // Execute liquidation by closing entire position
         PositionModule::decrease_position(
             position.account,
             position.market.clone(),
@@ -67,27 +84,44 @@ impl ExecutorService {
     /// Check if a position can be liquidated
     #[export]
     pub fn can_liquidate(&self, position_key: PositionKey) -> Result<bool, Error> {
+        let current_time = sails_rs::gstd::exec::block_timestamp();
+        
         let position = PositionModule::get_position(&position_key)?;
         let price_key = utils::price_key(&position.market);
         let current_price = OracleModule::mid(&price_key)?;
 
+        // Get config and pool (need both for fee calculation)
         let st = PerpetualDEXState::get();
         let config = st.market_configs.get(&position.market).ok_or(Error::MarketNotFound)?;
-        Ok(RiskModule::is_liquidatable(&position, current_price, config.liquidation_threshold_bps))
+        let pool = st.pool_amounts.get(&position.market).ok_or(Error::MarketNotFound)?;
+        
+        RiskModule::is_liquidatable(&position, pool, config, current_price, current_time)
     }
 
     /// Get all positions that can be liquidated
     #[export]
     pub fn get_liquidatable_positions(&self) -> Vec<PositionKey> {
         let st = PerpetualDEXState::get();
+        let current_time = sails_rs::gstd::exec::block_timestamp();
         let mut liquidatable = Vec::new();
 
         for (position_key, position) in st.positions.iter() {
             let price_key = utils::price_key(&position.market);
             if let Ok(current_price) = OracleModule::mid(&price_key) {
                 if let Some(config) = st.market_configs.get(&position.market) {
-                    if RiskModule::is_liquidatable(position, current_price, config.liquidation_threshold_bps) {
-                        liquidatable.push(*position_key);
+                    if let Some(pool) = st.pool_amounts.get(&position.market) {
+                        // Check with pending fees included
+                        if let Ok(is_liq) = RiskModule::is_liquidatable(
+                            position,
+                            pool,
+                            config,
+                            current_price,
+                            current_time,
+                        ) {
+                            if is_liq {
+                                liquidatable.push(*position_key);
+                            }
+                        }
                     }
                 }
             }
