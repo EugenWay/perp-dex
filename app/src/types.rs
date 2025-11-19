@@ -54,6 +54,32 @@ pub struct MarketConfig {
     pub max_short_oi: Usd,
 }
 
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            market_id: String::new(),
+            pi_factor_positive: 0,
+            pi_factor_negative: 0,
+            pi_exponent: 0,
+            funding_factor: 0,
+            funding_exponent: 0,
+            funding_factor_above_kink: 0,
+            optimal_imbalance_ratio: 0,
+            borrowing_factor: 0,
+            borrowing_exponent: 0,
+            skip_borrowing_for_smaller_side: false,
+            trading_fee_bps: 0,
+            max_leverage: 0,
+            min_collateral_usd: 0,
+            liquidation_threshold_bps: 0,
+            liquidation_fee_bps: 0,
+            reserve_factor_bps: 0,
+            max_long_oi: 0,
+            max_short_oi: 0,
+        }
+    }
+}
+
 /// Pool accounting in USD only
 #[derive(Encode, Decode, TypeInfo, Clone, Debug, Default)]
 #[codec(crate = sails_rs::scale_codec)]
